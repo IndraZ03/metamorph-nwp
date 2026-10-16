@@ -1,0 +1,3124 @@
+/* =====================================================================
+ * app.js — shell aplikasi
+ *
+ * Tidak tahu cara menggambar apa pun. Tugasnya: peta, panel layer,
+ * popup pemilih data, timeline + play, cache fetch, legenda.
+ * Rendering diserahkan ke file di script/layers/ lewat NWP.registerRenderer.
+ *
+ * Alur data
+ *   CATALOG.json  -> model / parameter / level / init apa saja yang ada
+ *   INDEX         -> daftar run satu produk + url manifest tiap run
+ *   manifest      -> daftar step + url file data
+ *   file data     -> grid untuk satu valid time
+ *
+ * Panel layer mulai KOSONG. Tiap layer dibuat saat pengguna menekan Add,
+ * membawa init time-nya sendiri — jadi dua kartu bisa menampilkan run
+ * berbeda dari produk yang sama untuk perbandingan.
+ *
+ * meta/parameters.json hanya berisi gaya per parameter, bukan daftar layer.
+ * ===================================================================== */
+
+const CONFIG_URL = "meta/parameters.json";
+
+const DEFAULTS = {
+    center   : { latlng: [-2.6, 115.6], zoom: 7 },
+    prefetch : 2,
+    cacheBust: true,
+    styles   : {},
+};
+
+// Pane z-index diturunkan dari urutan kartu, bukan dari config: kartu
+// teratas = layer paling atas.
+const Z_TOP = 500;
+const Z_GAP = 10;
+
+let APP = DEFAULTS;
+let uidSeq = 0;
+
+async function loadConfig() {
+    let r;
+    try {
+        r = await fetch(CONFIG_URL, { cache: "no-store" });
+    } catch (e) {
+        throw new Error(`${CONFIG_URL} tidak bisa diambil (${e.message})`);
+    }
+    if (!r.ok) throw new Error(`${CONFIG_URL} — HTTP ${r.status}`);
+
+    let cfg;
+    try {
+        cfg = await r.json();
+    } catch (e) {
+        throw new Error(`${CONFIG_URL} bukan JSON yang valid (${e.message})`);
+    }
+    if (!cfg.catalog) throw new Error(`${CONFIG_URL} tidak punya "catalog"`);
+    cfg.staticCatalog = cfg.staticCatalog || "meta/static.json";
+    cfg.tileCatalog   = cfg.tileCatalog   || "meta/satellite.json";
+    cfg.radarCatalog  = cfg.radarCatalog  || "meta/radar.json";
+    cfg.ef5Catalog    = cfg.ef5Catalog    || "meta/ef5.json";
+    cfg.colorbars     = cfg.colorbars     || "meta/colorbars.json";
+
+    return { ...DEFAULTS, ...cfg };
+}
+
+/** CATALOG dan INDEX berubah tiap run tapi URL-nya tetap. */
+function bust(url) {
+    if (!APP.cacheBust) return url;
+    return url + (url.includes("?") ? "&" : "?") + "t=" + Date.now();
+}
+
+/**
+ * Gaya untuk satu produk. Dicari makin umum: PARAMETER.LEVEL, lalu
+ * PARAMETER, lalu bawaan berdasarkan `type` di katalog — sehingga
+ * parameter baru tetap tampil meski belum punya entri gaya.
+ */
+function styleFor(spec) {
+    const s = APP.styles;
+    const hit = s[`${spec.parameter}.${spec.level}`] || s[spec.parameter];
+    if (hit) return hit;
+    return { renderer: NWP.rendererForType(spec.type), options: {} };
+}
+
+/* ------------------------------------------------------------------ */
+/* Time bar                                                            */
+/* ------------------------------------------------------------------ */
+
+class TimeBar {
+
+    constructor(stripEl, onSelect) {
+        this.strip    = stripEl;
+        this.onSelect = onSelect;
+        this.times    = [];
+        this.buttons  = [];
+        this.index    = -1;
+
+        this.prevBtn  = document.getElementById("btn-prev");
+        this.nextBtn  = document.getElementById("btn-next");
+        this.playBtn  = document.getElementById("btn-play");
+        this.speedSel = document.getElementById("speed");
+
+        this.prevBtn.addEventListener("click", () => { this.stop(); this.step(-1); });
+        this.nextBtn.addEventListener("click", () => { this.stop(); this.step(+1); });
+        this.playBtn.addEventListener("click", () => this.togglePlay());
+        this.speedSel.addEventListener("change", () => {
+            if (this.timer) { this.stop(); this.play(); }
+        });
+
+        document.addEventListener("keydown", e => {
+            const t = e.target.tagName;
+            if (t === "INPUT" || t === "SELECT" || t === "TEXTAREA") return;
+            if (e.key === "ArrowLeft")  { this.stop(); this.step(-1); e.preventDefault(); }
+            if (e.key === "ArrowRight") { this.stop(); this.step(+1); e.preventDefault(); }
+            if (e.key === " ")          { this.togglePlay(); e.preventDefault(); }
+        });
+
+        this.setEnabled(false);
+    }
+
+    setEnabled(on) {
+        this.playBtn.disabled = !on;
+        if (!on) {
+            this.prevBtn.disabled = true;
+            this.nextBtn.disabled = true;
+        }
+    }
+
+    clear() {
+        this.stop();
+        this.times   = [];
+        this.buttons = [];
+        this.index   = -1;
+        this.strip.innerHTML =
+            '<p class="tb-empty">Tambahkan data untuk menampilkan rentang waktu.</p>';
+        this.setEnabled(false);
+    }
+
+    /**
+     * @param times   daftar valid_time (ISO) terurut
+     * @param countAt iso -> berapa layer aktif yang punya step itu
+     */
+    build(times, countAt) {
+        if (!times.length) return this.clear();
+
+        this.times   = times;
+        this.buttons = [];
+        this.index   = -1;
+        this.strip.innerHTML = "";
+        this.setEnabled(true);
+
+        let group = null, lastDay = null, firstOfDay = 0;
+
+        times.forEach((iso, k) => {
+            const d  = NWP.time.parse(iso);
+            const dk = NWP.time.dayKey(d);
+
+            if (dk !== lastDay) {
+                firstOfDay = k;
+                group = document.createElement("div");
+                group.className = "tb-day";
+
+                const label = document.createElement("button");
+                label.type        = "button";
+                label.className   = "tb-day-label";
+                label.textContent = NWP.time.dayLabel(d);
+                label.title       = "Lompat ke awal hari ini";
+                const jumpTo = firstOfDay;
+                label.addEventListener("click", () => {
+                    this.stop();
+                    this.select(jumpTo);
+                });
+
+                const hours = document.createElement("div");
+                hours.className = "tb-hours";
+
+                group.append(label, hours);
+                this.strip.appendChild(group);
+                group._hours = hours;
+                lastDay = dk;
+            }
+
+            const b = document.createElement("button");
+            b.type        = "button";
+            b.className   = "tb-hour";
+            b.textContent = NWP.time.hhmm(d);
+            b.title       = NWP.time.full(iso);
+            b.addEventListener("click", () => { this.stop(); this.select(k); });
+
+            group._hours.appendChild(b);
+            this.buttons.push(b);
+        });
+
+        if (countAt) this.markPartial(countAt);
+    }
+
+    /** Tandai jam yang tidak semua layer aktifnya punya data. */
+    markPartial(countAt) {
+        if (!this.times.length) return;
+        const max = Math.max(0, ...this.times.map(countAt));
+        this.times.forEach((iso, k) => {
+            this.buttons[k].classList.toggle("is-partial", countAt(iso) < max);
+        });
+    }
+
+    step(d) { this.select(this.index + d); }
+
+    select(k, force = false) {
+        if (!this.times.length) return;
+        if (k < 0 || k >= this.times.length) return;
+        if (k === this.index && !force) return;
+
+        this.buttons[this.index]?.classList.remove("is-active");
+        this.index = k;
+
+        const b = this.buttons[k];
+        b.classList.add("is-active");
+        b.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
+
+        this.prevBtn.disabled = (k === 0);
+        this.nextBtn.disabled = (k === this.times.length - 1);
+
+        this.onSelect(this.times[k], k);
+    }
+
+    selectNearest(targetIso) {
+        if (!this.times.length) return;
+        if (!targetIso) return this.select(this.defaultIndex(), true);
+
+        const t = Date.parse(targetIso);
+        let best = 0, bestD = Infinity;
+        this.times.forEach((iso, k) => {
+            const d = Math.abs(Date.parse(iso) - t);
+            if (d < bestD) { bestD = d; best = k; }
+        });
+        this.select(best, true);
+    }
+
+    /** Step pertama yang >= jam berikutnya dari sekarang (UTC). */
+    defaultIndex() {
+        const t = new Date();
+        t.setUTCMinutes(0, 0, 0);
+        t.setUTCHours(t.getUTCHours() + 1);
+        const idx = this.times.findIndex(iso => Date.parse(iso) >= t.getTime());
+        return idx < 0 ? this.times.length - 1 : idx;
+    }
+
+    togglePlay() { this.timer ? this.stop() : this.play(); }
+
+    play() {
+        if (this.times.length < 2) return;
+
+        this.playBtn.textContent = "\u275a\u275a";
+        this.playBtn.setAttribute("aria-label", "Jeda");
+
+        this.timer = setInterval(() => {
+            // Lewati tick kalau frame sebelumnya masih dimuat, supaya
+            // animasi tidak menumpuk permintaan saat jaringan lambat.
+            if (this.busy) return;
+            const next = this.index + 1;
+            this.select(next >= this.times.length ? 0 : next);
+        }, Number(this.speedSel.value));
+    }
+
+    stop() {
+        if (!this.timer) return;
+        clearInterval(this.timer);
+        this.timer = null;
+        this.playBtn.textContent = "\u25b6";
+        this.playBtn.setAttribute("aria-label", "Putar");
+    }
+
+    setBusy(on) {
+        this.busy = !!on;
+        this.strip.classList.toggle("is-busy", !!on);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Satu layer                                                          */
+/* ------------------------------------------------------------------ */
+
+class Layer {
+
+    /**
+     * @param spec {model, domain, parameter, level, long_name, unit, type,
+     *              indexUrl, init}
+     */
+    constructor(spec, map) {
+        this.uid  = `L${++uidSeq}`;
+        this.spec = spec;
+        this.map  = map;
+
+        const style   = styleFor(spec);
+        this.renderer = style.renderer;
+
+        const opt = { ...(style.options || {}) };
+
+        // Skala warna dirujuk lewat nama; daftar pilihannya disimpan di
+        // layer supaya kartu bisa menawarkan penggantian setelah tampil.
+        this.colorbars = NWP.colorbars.available(opt.colorbar);
+        this.colorbar  = this.colorbars.includes(opt.colorbar_default)
+            ? opt.colorbar_default
+            : (this.colorbars[0] || null);
+
+        delete opt.colorbar;
+        delete opt.colorbar_default;
+
+        // levels/colors yang ditulis langsung di parameters.json menang
+        // atas colorbar_default — jalan keluar untuk gaya sekali pakai.
+        const fromBar = this.colorbar ? NWP.colorbars.resolve(this.colorbar) : {};
+        this.options = {
+            ...fromBar,
+            ...opt,
+            unit: spec.unit,
+        };
+
+        this.manifest = null;
+        this.byTime   = new Map();
+        this.cache    = new Map();
+        this.instance = null;
+        this.token    = 0;
+        this.kind      = "nwp";
+        this.hasTime   = true;
+        this.on        = true;   // layer baru selalu aktif
+        this.opacity   = 1;      // dan opasitas penuh
+        this.threshold = null;   // {mode:'gt'|'lt'|'range', min, max}
+
+        this.paneName = `nwp-${this.uid}`;
+        this.pane = map.createPane(this.paneName);
+        this.pane.style.pointerEvents = "none";
+        this.pane.style.opacity = "1";
+    }
+
+    /** "RH 700" / "TP" — nama pendek untuk judul kartu. */
+    get title() {
+        const lv = this.spec.level;
+        return lv && lv !== "SFC"
+            ? `${this.spec.parameter} ${lv}`
+            : this.spec.parameter;
+    }
+
+    /** "WRF KALIMANTAN · 04/09 12:00Z" — asal-usul, agar dua kartu
+     *  dari produk sama tapi run berbeda tidak tertukar. */
+    get origin() {
+        const d = NWP.time.parse(this.spec.init);
+        const p = n => String(n).padStart(2, "0");
+        return `${this.spec.model} ${this.spec.domain} \u00b7 `
+             + `${p(d.getUTCDate())}/${p(d.getUTCMonth() + 1)} `
+             + `${NWP.time.hhmm(d)}Z`;
+    }
+
+    get def() { return NWP.getRenderer(this.renderer); }
+
+    url(u) { return NWP.resolveUrl(u, this.spec.indexUrl); }
+
+    setOpacity(v) {
+        this.opacity = v;
+        this.pane.style.opacity = String(v);
+    }
+
+    setZ(z) { this.pane.style.zIndex = String(z); }
+
+    async loadRun(manifestUrl) {
+        const r = await fetch(this.url(manifestUrl));
+        if (!r.ok) throw new Error(`${r.status} manifest`);
+
+        this.manifest = await r.json();
+        this.byTime   = new Map(this.manifest.steps.map(s => [s.valid_time, s]));
+        return this.manifest;
+    }
+
+    fetchStep(s) {
+        const url = this.url(s.url);
+        if (this.cache.has(url)) return this.cache.get(url);
+
+        const def = this.def;
+        const p = fetch(url)
+            .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+            .then(json => def.parse(json, this.manifest));
+
+        this.cache.set(url, p);
+        return p;
+    }
+
+    /** Renderer yang menandai dirinya colorable dapat pemilih warna di kartu. */
+    get colorable() { return !!this.def.colorable; }
+
+    setColorbar(name) {
+        const bar = NWP.colorbars.resolve(name);
+        if (!bar.levels) return;
+
+        this.colorbar = name;
+        Object.assign(this.options, bar);
+        // Warna tunggal dari pemilih warna tidak lagi berlaku.
+        delete this.options.color;
+
+        this.instance?.setColorbar?.(bar);
+    }
+
+    setColor(c) {
+        this.options.color = c;
+        this.instance?.setColor?.(c);
+    }
+
+    setThreshold(t) {
+        this.threshold = t;
+        this.instance?.setThreshold?.(t);
+    }
+
+    /**
+     * Ganti antara kontur terisi dan garis TANPA membuat ulang layer.
+     * Nama renderer diperbarui juga, karena `colorable` (dipakai
+     * SettingsPicker.renderLineColor() untuk menentukan apakah bagian
+     * Warna ditampilkan) dibaca dari situ lewat NWP.getRenderer(this.renderer)
+     * — mode garis colorable, mode terisi tidak.
+     */
+    setDisplayMode(mode) {
+        if (mode !== "fill" && mode !== "line") return;
+        this.renderer = mode === "line" ? "line" : "contour";
+        this.instance?.setMode?.(mode);
+    }
+
+    get displayMode() {
+        return this.instance?.mode || (this.renderer === "line" ? "line" : "fill");
+    }
+
+    setSmooth(v) {
+        this.options.smooth = !!v;
+        this.instance?.setSmooth?.(!!v);
+    }
+
+    /** Kontur dan garis berasal dari kelas yang sama, jadi bisa saling
+     *  bertukar mode; layer lain (barb, tile, statis) tidak. */
+    get canSwitchDisplay() {
+        return this.renderer === "contour" || this.renderer === "line";
+    }
+
+    mount() {
+        if (this.instance) return;
+        this.instance = this.def.create(this.map, {
+            ...this.options,
+            pane: this.paneName,
+        });
+    }
+
+    unmount() {
+        this.token++;
+        this.instance?.remove();
+        this.instance = null;
+    }
+
+    destroy() {
+        this.unmount();
+        this.pane.remove();
+    }
+
+    /**
+     * Step terakhir yang valid_time-nya <= iso.
+     *
+     * Timeline bisa lebih halus dari langkah layer ini — misalnya saat
+     * satelit 10 menitan ikut ditambahkan. Aturannya: tampilkan data
+     * terakhir yang sudah berlaku, jangan data masa depan. Jadi di jam
+     * 00:30 layer NWP per jam tetap menampilkan 00:00.
+     */
+    resolve(iso) {
+        if (this.byTime.has(iso)) return this.byTime.get(iso);
+
+        const t = Date.parse(iso);
+        let hit = null;
+        for (const s of this.manifest?.steps || []) {
+            if (Date.parse(s.valid_time) <= t) hit = s; else break;
+        }
+        return hit;
+    }
+
+    async show(iso) {
+        const s = this.resolve(iso);
+        if (!s || !this.instance) return null;
+
+        const my = ++this.token;
+        try {
+            const field = await this.fetchStep(s);
+            if (my !== this.token || !this.instance) return null;
+            this.instance.setField(field);
+
+            const note = this.instance.describe?.() || "";
+            if (s.valid_time === iso) return note;
+
+            // Beri tahu kalau yang tampil bukan jam yang diminta.
+            const froze = NWP.time.hhmm(NWP.time.parse(s.valid_time));
+            return note ? `${note} (${froze})` : `${froze}`;
+        } catch (e) {
+            if (my !== this.token) return null;
+            return `gagal (${e.message})`;
+        }
+    }
+
+    prefetch(times) {
+        // Ambil step unik yang akan dipakai oleh waktu-waktu tetangga.
+        // Pakai resolve(), bukan cocok persis: di timeline 10 menitan,
+        // tetangga terdekat sering memakai step yang sama.
+        const seen = new Set();
+        times.forEach(iso => {
+            const s = this.resolve(iso);
+            if (s && !seen.has(s.url)) {
+                seen.add(s.url);
+                this.fetchStep(s).catch(() => {});
+            }
+        });
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Popup pemilih data                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Kabel standar untuk semua popup: klik elemen [data-close] atau tombol
+ * Escape menutupnya. Diekstrak karena pola ini terulang di tujuh kelas
+ * popup — dan pengulangan itu pernah membuat satu popup (GPX) lupa
+ * dikasih penutup lewat Escape, gejala umum saat boilerplate disalin
+ * tangan alih-alih dibagi dari satu tempat.
+ */
+function bindModalClose(root, onClose) {
+    root.querySelectorAll("[data-close]")
+        .forEach(n => n.addEventListener("click", onClose));
+
+    document.addEventListener("keydown", e => {
+        if (e.key === "Escape" && !root.hidden) onClose();
+    });
+}
+
+const STORAGE_KEY     = "nwpViewer.state.v1";
+const STORAGE_VERSION = 1;
+
+/**
+ * Simpan/pulihkan susunan layer supaya refresh halaman tidak membuang
+ * kerja pengguna. Yang DIPULIHKAN hanya layer yang bisa dibangun ulang
+ * dari sumber yang stabil:
+ *
+ *   nwp    : model/parameter/level/init — dibangun ulang lewat INDEX
+ *            dan manifest yang sama seperti saat pertama ditambahkan.
+ *   static : HANYA yang berasal dari katalog (punya id). Upload manual
+ *            (spec.geo / spec.gpx) sengaja TIDAK disimpan — isinya bisa
+ *            besar dan sudah tidak ada begitu tab ditutup, jadi mencoba
+ *            memulihkannya cuma akan gagal diam-diam.
+ *   tile   : dicocokkan ulang lewat id di meta/satellite.json.
+ *   radar  : dicocokkan ulang lewat kode situs di meta/radar.json.
+ *   draw   : bentuk yang sudah digambar, lewat GeoJSON (kecil, aman
+ *            disimpan apa adanya).
+ *   gpx    : TIDAK disimpan, alasan sama dengan upload statis — trek
+ *            GPX bisa berukuran besar dan cuma ada di memori tab ini.
+ */
+function loadPersisted() {
+    let raw;
+    try {
+        raw = localStorage.getItem(STORAGE_KEY);
+    } catch (e) {
+        console.warn("localStorage tidak bisa diakses:", e);
+        return null;
+    }
+    if (!raw) return null;
+
+    try {
+        const state = JSON.parse(raw);
+        if (state?.version !== STORAGE_VERSION) return null;
+        return state;
+    } catch (e) {
+        console.warn("State tersimpan rusak, diabaikan:", e);
+        return null;
+    }
+}
+
+function writePersisted(state) {
+    try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch (e) {
+        // Kuota penuh atau mode privat — jangan sampai ini menghentikan
+        // aplikasi, cukup diam-diam gagal.
+        console.warn("Gagal menyimpan state:", e);
+    }
+}
+
+class Picker {
+
+    constructor(catalogUrl, onAdd) {
+        this.catalogUrl = catalogUrl;
+        this.onAdd      = onAdd;
+        this.catalog    = null;
+
+        this.el = {
+            root  : document.getElementById("picker"),
+            models: document.getElementById("pick-models"),
+            params: document.getElementById("pick-params"),
+            levels: document.getElementById("pick-levels"),
+            init  : document.getElementById("pick-init"),
+            hint  : document.getElementById("pick-hint"),
+            add   : document.getElementById("btn-do-add"),
+            refresh: document.getElementById("pick-refresh"),
+            updated: document.getElementById("pick-updated"),
+        };
+
+        bindModalClose(this.el.root, () => this.close());
+
+        this.el.add.addEventListener("click", () => this.add());
+        this.el.refresh.addEventListener("click", () => this.refresh());
+
+        // Listener baru: Saat initial time diganti, render ulang param dan level
+        this.el.init.addEventListener("change", () => {
+            this.initTime = this.el.init.value;
+            this.renderParams();
+        });
+    }
+
+    async load() {
+        const r = await fetch(bust(this.catalogUrl), { cache: "no-store" });
+        if (!r.ok) throw new Error(`${r.status} ${this.catalogUrl}`);
+        this.catalog = await r.json();
+        this.fetchedAt = new Date();
+        return this.catalog;
+    }
+
+    /** Semua init time yang ada di katalog, terbaru dulu. */
+    allRuns(catalog = this.catalog) {
+        const set = new Set();
+        (catalog?.models || []).forEach(mo =>
+            mo.parameters.forEach(par =>
+                par.levels.forEach(lv => (lv.runs || []).forEach(r => set.add(r)))));
+        return [...set].sort((a, b) => b.localeCompare(a));
+    }
+
+    /** Ringkas pilihan yang sedang aktif sebagai nilai, bukan objek:
+     *  setelah katalog dimuat ulang, objeknya sudah diganti yang baru. */
+    snapshot() {
+        return {
+            model    : this.model?.model,
+            domain   : this.model?.domain,
+            parameter: this.param?.parameter,
+            level    : this.level?.level,
+            init     : this.initTime,
+            runs     : this.allRuns(),
+        };
+    }
+
+    /**
+     * Ambil ulang katalog tanpa menutup popup dan tanpa menghilangkan
+     * pilihan yang sedang dibuat. Layer yang sudah ada di peta TIDAK
+     * disentuh — katalog hanya menentukan apa yang ditawarkan popup.
+     */
+    async refresh() {
+        const before = this.snapshot();
+
+        this.el.refresh.disabled = true;
+        this.el.refresh.classList.add("is-busy");
+
+        try {
+            await this.load();
+            this.buildModels();
+            this.restore(before);
+
+            const after = this.allRuns();
+            const fresh = after.filter(r => !before.runs.includes(r));
+            const gone  = before.runs.filter(r => !after.includes(r));
+
+            const bits = [];
+            if (fresh.length) {
+                bits.push(`${fresh.length} run baru \u2014 terbaru `
+                        + NWP.time.full(fresh[0]));
+            }
+            // Run yang hilang biasanya karena keep_runs di pipeline; layer
+            // yang masih menunjuk ke sana akan berhenti bisa memuat step.
+            if (gone.length) bits.push(`${gone.length} run lama dihapus`);
+            if (!bits.length) bits.push("Katalog sudah yang terbaru");
+
+            this.el.hint.textContent = bits.join(" \u00b7 ");
+            this.stamp();
+
+        } catch (e) {
+            this.el.hint.textContent = `Katalog gagal disegarkan: ${e.message}`;
+        } finally {
+            this.el.refresh.disabled = false;
+            this.el.refresh.classList.remove("is-busy");
+        }
+    }
+
+    /** Pulihkan pilihan berdasarkan nama, sejauh masih ada di katalog baru. */
+    restore(sel) {
+        const models = this.catalog.models || [];
+        if (!models.length) return;
+
+        const mo = models.find(m => m.model === sel.model
+                                 && m.domain === sel.domain) || models[0];
+
+        this.model = mo;
+        [...this.el.models.children].forEach(b =>
+            b.classList.toggle("is-active", b._model === mo));
+
+        const runs = this.buildRuns(mo);
+        this.initTime = runs.includes(sel.init) ? sel.init : (runs[0] || null);
+        if (this.initTime) this.el.init.value = this.initTime;
+
+        this.param = mo.parameters.find(p => p.parameter === sel.parameter) || null;
+        this.level = this.param
+            ? (this.param.levels.find(l => l.level === sel.level) || null)
+            : null;
+
+        this.renderParams();
+    }
+
+    stamp() {
+        if (!this.el.updated) return;
+        const t = this.fetchedAt;
+        if (!t) { this.el.updated.textContent = ""; return; }
+        const p = n => String(n).padStart(2, "0");
+        this.el.updated.textContent =
+            `diambil ${p(t.getUTCHours())}:${p(t.getUTCMinutes())} UTC`;
+    }
+
+    open() {
+        this.el.root.hidden = false;
+        if (!this.model) this.pickModel(this.catalog.models[0]);
+        this.stamp();
+    }
+
+    close() { this.el.root.hidden = true; }
+
+    /* ---- model ---- */
+
+    buildModels() {
+        this.el.models.innerHTML = "";
+
+        this.catalog.models.forEach(mo => {
+            const b = document.createElement("button");
+            b.type        = "button";
+            b.className   = "tab";
+            b.role        = "tab";
+            b.textContent = mo.label || `${mo.model} ${mo.domain}`;
+            b.addEventListener("click", () => this.pickModel(mo));
+            b._model = mo;
+            this.el.models.appendChild(b);
+        });
+    }
+
+    pickModel(mo) {
+        this.model = mo;
+        this.param = null;
+        this.level = null;
+
+        [...this.el.models.children].forEach(b =>
+            b.classList.toggle("is-active", b._model === mo));
+
+        const runs = this.buildRuns(mo);
+        this.initTime = runs.length ? runs[0] : null;
+
+        this.renderParams();
+    }
+
+    /**
+     * Isi dropdown Initial Time dari seluruh param dan level milik model
+     * ini. Dipisah dari pickModel supaya refresh bisa memakainya ulang
+     * tanpa ikut mereset parameter dan level yang sedang dipilih.
+     * @returns daftar init time, terbaru dulu
+     */
+    buildRuns(mo) {
+        const set = new Set();
+        mo.parameters.forEach(par =>
+            par.levels.forEach(lv => (lv.runs || []).forEach(r => set.add(r))));
+
+        const runs = [...set].sort((a, b) => b.localeCompare(a));
+
+        this.el.init.innerHTML = "";
+        runs.forEach(iso => {
+            const o = document.createElement("option");
+            o.value = iso;
+            o.textContent = NWP.time.full(iso);
+            this.el.init.appendChild(o);
+        });
+
+        this.el.init.disabled = runs.length === 0;
+        return runs;
+    }
+
+    /* ---- parameter & level ---- */
+
+    renderParams() {
+        if (!this.model || !this.initTime) {
+            this.el.params.innerHTML = "";
+            this.el.levels.innerHTML = "";
+            this.refreshAdd();
+            return;
+        }
+
+        // Saring parameter yang TERSEDIA pada initial time yang sedang terpilih
+        const availableParams = this.model.parameters.filter(p => 
+            p.levels.some(l => (l.runs || []).includes(this.initTime))
+        );
+
+        // Jika param yang sebelumnya dipilih TIDAK ADA di waktu ini, reset
+        if (this.param && !availableParams.includes(this.param)) {
+            this.param = null;
+        }
+
+        this.el.params.innerHTML = "";
+        availableParams.forEach(par => {
+            const b = document.createElement("button");
+            b.type        = "button";
+            b.className   = "chip";
+            b.textContent = par.parameter;
+            b.title       = par.levels.map(l => l.long_name).join(" / ");
+            b.addEventListener("click", () => this.pickParam(par));
+            b._par = par;
+            
+            if (this.param === par) b.classList.add("is-active");
+            this.el.params.appendChild(b);
+        });
+
+        this.renderLevels();
+    }
+
+    pickParam(par) {
+        this.param = par;
+        [...this.el.params.children].forEach(b =>
+            b.classList.toggle("is-active", b._par === par));
+        this.renderLevels();
+    }
+
+    renderLevels() {
+        this.el.levels.innerHTML = "";
+
+        if (!this.param) {
+            this.el.hint.textContent = "Pilih parameter.";
+            this.refreshAdd();
+            return;
+        }
+
+        // Saring level yang TERSEDIA pada initial time yang sedang terpilih
+        const availableLevels = this.param.levels.filter(l => 
+            (l.runs || []).includes(this.initTime)
+        );
+
+        // Jika level yang sebelumnya dipilih TIDAK ADA di waktu/param ini, reset
+        if (this.level && !availableLevels.includes(this.level)) {
+            this.level = null;
+        }
+
+        availableLevels.forEach(lv => {
+            const b = document.createElement("button");
+            b.type        = "button";
+            b.className   = "chip";
+            b.textContent = lv.level;
+            b.title       = lv.long_name;
+            b.addEventListener("click", () => this.pickLevel(lv));
+            b._lv = lv;
+            
+            if (this.level === lv) b.classList.add("is-active");
+            this.el.levels.appendChild(b);
+        });
+
+        // Auto-select jika level menjadi null TAPI hanya ada 1 level yang tersedia
+        if (!this.level && availableLevels.length === 1) {
+            this.level = availableLevels[0];
+            this.el.levels.children[0].classList.add("is-active");
+        }
+
+        this.el.hint.textContent = this.level ? this.level.long_name : "Pilih level.";
+        this.refreshAdd();
+    }
+
+    pickLevel(lv) {
+        this.level = lv;
+        [...this.el.levels.children].forEach(b =>
+            b.classList.toggle("is-active", b._lv === lv));
+        this.el.hint.textContent = lv.long_name;
+        this.refreshAdd();
+    }
+
+    refreshAdd() {
+        this.el.add.disabled = !(this.model && this.param && this.level && this.initTime);
+    }
+
+    add() {
+        if (this.el.add.disabled) return;
+
+        this.onAdd({
+            model    : this.model.model,
+            domain   : this.model.domain,
+            parameter: this.param.parameter,
+            level    : this.level.level,
+            long_name: this.level.long_name,
+            unit     : this.param.unit,
+            type     : this.param.type,
+            indexUrl : NWP.resolveUrl(this.level.index, this.catalogUrl),
+            init     : this.initTime, // Mengambil dari state, bukan DOM
+            manifest : null,   
+        });
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Popup layer tile (satelit / radar)                                  */
+/* ------------------------------------------------------------------ */
+
+class TilePicker {
+
+    constructor(url, onAdd) {
+        this.url     = url;
+        this.onAdd   = onAdd;
+        this.catalog = null;
+        this.pick    = null;
+
+        this.el = {
+            root   : document.getElementById("picker-tile"),
+            groups : document.getElementById("tile-groups"),
+            list   : document.getElementById("tile-list"),
+            hint   : document.getElementById("tile-hint"),
+            opacity: document.getElementById("tile-opacity"),
+            note   : document.getElementById("tile-note"),
+            add    : document.getElementById("btn-do-add-tile"),
+        };
+
+        bindModalClose(this.el.root, () => this.close());
+
+        this.el.add.addEventListener("click", () => this.add());
+    }
+
+    async load() {
+        const r = await fetch(this.url, { cache: "no-store" });
+        if (!r.ok) throw new Error(`${r.status} ${this.url}`);
+        this.catalog = await r.json();
+
+        const groups = [...new Set(
+            (this.catalog.sources || []).map(s => s.group || "Lainnya"))];
+
+        this.el.groups.innerHTML = "";
+        groups.forEach(g => {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = "tab";
+            b.textContent = g;
+            b.addEventListener("click", () => this.pickGroup(g));
+            b._g = g;
+            this.el.groups.appendChild(b);
+        });
+
+        if (groups.length) this.pickGroup(groups[0]);
+        return this.catalog;
+    }
+
+    pickGroup(g) {
+        [...this.el.groups.children].forEach(b =>
+            b.classList.toggle("is-active", b._g === g));
+
+        this.el.list.innerHTML = "";
+        this.catalog.sources
+            .filter(s => (s.group || "Lainnya") === g)
+            .forEach(src => {
+                const b = document.createElement("button");
+                b.type = "button";
+                b.className = "chip";
+                b.textContent = src.label;
+                b.addEventListener("click", () => this.select(src));
+                b._src = src;
+                this.el.list.appendChild(b);
+            });
+
+        this.pick = null;
+        this.el.add.disabled = true;
+        this.el.hint.textContent = "Pilih produk.";
+        this.el.note.textContent = "";
+    }
+
+    select(src) {
+        this.pick = src;
+        [...this.el.list.children].forEach(b =>
+            b.classList.toggle("is-active", b._src === src));
+
+        this.el.hint.textContent = src.label;
+        this.el.opacity.value = String(src.opacity ?? 1);
+
+        // Rentang zoom penting disebut: di luar itu tile tidak tersedia
+        // dan Leaflet akan merentangkan tile terakhir.
+        this.el.note.textContent =
+            `Zoom ${src.min_zoom}\u2013${src.max_zoom} \u00b7 `
+          + `tiap ${src.step_minutes} menit \u00b7 `
+          + `${src.history_hours} jam terakhir. `
+          + `Menambahkan ini membuat timeline turun ke resolusi `
+          + `${src.step_minutes} menit; layer NWP akan membeku di jam bulat.`;
+
+        this.el.add.disabled = false;
+    }
+
+    open()  { this.el.root.hidden = false; }
+    close() { this.el.root.hidden = true; }
+
+    add() {
+        if (!this.pick) return;
+        this.onAdd({ ...this.pick, opacity: Number(this.el.opacity.value) });
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Popup radar                                                         */
+/* ------------------------------------------------------------------ */
+
+class RadarPicker {
+
+    constructor(url, onAdd) {
+        this.url     = url;
+        this.onAdd   = onAdd;
+        this.catalog = null;
+        this.pick    = null;
+
+        this.el = {
+            root   : document.getElementById("picker-radar"),
+            list   : document.getElementById("radar-list"),
+            hint   : document.getElementById("radar-hint"),
+            opacity: document.getElementById("radar-opacity"),
+            note   : document.getElementById("radar-note"),
+            add    : document.getElementById("btn-do-add-radar"),
+        };
+
+        bindModalClose(this.el.root, () => this.close());
+
+        this.el.add.addEventListener("click", () => this.add());
+    }
+
+    async load() {
+        const r = await fetch(this.url, { cache: "no-store" });
+        if (!r.ok) throw new Error(`${r.status} ${this.url}`);
+        this.catalog = await r.json();
+
+        const base    = (this.catalog.base || "data/wxr").replace(/\/+$/, "");
+        const product = this.catalog.product || "CMAX";
+        // legends nyaris selalu sama untuk semua situs CMAX — dipakai
+        // bersama dari level produk kecuali situs punya legends sendiri.
+        const sharedLegends = this.catalog.legends || null;
+
+        this.el.list.innerHTML = "";
+        (this.catalog.sites || []).forEach(site => {
+            // Lokasi manifest diturunkan dari kode situs, jadi menambah
+            // radar baru cukup satu baris di katalog.
+            const prod = site.product || product;
+            const dir  = site.dir || `${base}/${site.code}/${prod}`;
+
+            const spec = {
+                code    : site.code,
+                label   : site.label || site.code,
+                product : prod,
+                dir,
+                manifest: site.manifest || `${dir}/${site.code}_${prod}_latest.json`,
+                // Statis dari katalog — tidak lagi dibaca dari manifest.
+                bounds  : site.bounds || null,
+                legends : site.legends || sharedLegends,
+                Stasiun : site.Stasiun || null,
+                lat     : site.lat ?? null,
+                lon     : site.lon ?? null,
+            };
+
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = "chip";
+            b.textContent = spec.label;
+            b.title = spec.manifest;
+            if (!spec.bounds) {
+                // Situs belum lengkap di katalog (mis. PKY) — jangan
+                // biarkan dipilih sampai bounds-nya diisi.
+                b.disabled = true;
+                b.title = `${spec.manifest} — bounds belum ada di katalog`;
+            }
+            b.addEventListener("click", () => this.select(spec));
+            b._spec = spec;
+            this.el.list.appendChild(b);
+        });
+
+        return this.catalog;
+    }
+
+    select(spec) {
+        this.pick = spec;
+        [...this.el.list.children].forEach(b =>
+            b.classList.toggle("is-active", b._spec === spec));
+
+        this.el.hint.textContent = `${spec.code} \u00b7 ${spec.product}`;
+        this.el.note.textContent =
+            "Citra tiap 10 menit dari history di manifest. Menambahkan ini "
+          + "membuat timeline turun ke resolusi 10 menit; layer NWP akan "
+          + "membeku di jam bulat.";
+        this.el.add.disabled = false;
+    }
+
+    /** Cari kembali spec yang sama seperti yang dibangun load() untuk
+     *  kode situs tertentu — dipakai memulihkan layer radar tersimpan
+     *  tanpa menduplikasi rumus dir/manifest di tempat lain. */
+    findSpec(code) {
+        const btn = [...this.el.list.children].find(b => b._spec.code === code);
+        return btn?._spec ?? null;
+    }
+
+    open()  { this.el.root.hidden = false; }
+    close() { this.el.root.hidden = true; }
+
+    add() {
+        if (!this.pick) return;
+        this.onAdd({ ...this.pick, opacity: Number(this.el.opacity.value) });
+    }
+}
+
+class Ef5Picker {
+
+    /**
+     * Berbeda dari sebelumnya: TIDAK LAGI meminta pengguna memilih satu
+     * lead time di sini — layer sekarang ikut timeline bersama (lihat
+     * geotiff-layer.js), jadi navigasi waktunya lewat timebar seperti
+     * layer NWP/Radar lainnya. Popup ini cukup memastikan basin yang
+     * dipilih + manifest-nya bisa dijangkau, lalu Add.
+     */
+    constructor(url, onAdd) {
+        this.url     = url;
+        this.onAdd   = onAdd;
+        this.catalog = null;
+        this.site    = null;
+
+        this.el = {
+            root: document.getElementById("picker-ef5"),
+            list: document.getElementById("ef5-list"),
+            hint: document.getElementById("ef5-hint"),
+            add : document.getElementById("btn-do-add-ef5"),
+        };
+
+        bindModalClose(this.el.root, () => this.close());
+        this.el.add.addEventListener("click", () => this.add());
+    }
+
+    async load() {
+        const r = await fetch(this.url, { cache: "no-store" });
+        if (!r.ok) throw new Error(`${r.status} ${this.url}`);
+        this.catalog = await r.json();
+
+        this.el.list.innerHTML = "";
+        (this.catalog.sites || []).forEach(site => {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = "chip";
+            b.textContent = site.label;
+            b.addEventListener("click", () => this.selectSite(site));
+            b._site = site;
+            this.el.list.appendChild(b);
+        });
+
+        return this.catalog;
+    }
+
+    selectSite(site) {
+        this.site = site;
+        [...this.el.list.children].forEach(b =>
+            b.classList.toggle("is-active", b._site === site));
+
+        this.el.hint.textContent = `${site.label} \u00b7 ${site.parameter}`;
+        this.el.add.disabled = false;
+    }
+
+    open()  { this.el.root.hidden = false; }
+    close() { this.el.root.hidden = true; }
+
+    add() {
+        if (!this.site) return;
+        // Manifest-nya dimuat oleh GeoTiffLayer sendiri saat load() —
+        // di sini cukup teruskan cara MENEMUKANNYA (URL) + metadata
+        // tampilan (colorbar). Sama pola dengan RadarLayer yang juga
+        // memuat manifest sendiri setelah ditambahkan, bukan di popup.
+        this.onAdd({
+            label       : this.site.label,
+            manifestUrl : this.site.manifest,
+            basin       : this.site.label,
+            parameter   : this.site.parameter,
+            colorbarName: this.site.colorbarName,
+        });
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Popup data statis                                                   */
+/* ------------------------------------------------------------------ */
+
+const SWATCHES = ["#ed3036", "#c24d00", "#8a5a00", "#1f8a1f",
+                  "#1f6fb2", "#5b3fa8", "#3b3b3b"];
+
+// Untuk barb yang penting kontras terhadap field di bawahnya, bukan
+// kekayaan warna: hitam, putih, dan tiga warna jenuh.
+const BARB_SWATCHES = ["#1a1a1a", "#ffffff", "#d81f12", "#193361", "#f7de00"];
+
+class StaticPicker {
+
+    constructor(url, onAdd) {
+        this.url     = url;
+        this.onAdd   = onAdd;
+        this.catalog = null;
+        this.pick    = null;
+
+        // Popup hanya memilih DATA. Warna dan gaya garis diatur di kartu
+        // layer, karena pilihan yang tepat baru kelihatan setelah layer
+        // bertumpuk di peta — dan di sana bisa diubah tanpa menambah ulang.
+        this.el = {
+            root     : document.getElementById("picker-static"),
+            list     : document.getElementById("static-list"),
+            hint     : document.getElementById("static-hint"),
+            file     : document.getElementById("static-file"),
+            add      : document.getElementById("btn-do-add-static"),
+            fieldRow : document.getElementById("static-label-field-row"),
+            field    : document.getElementById("static-label-field"),
+        };
+
+        // Isi data yang sedang dipilih (geo sudah di-parse, bukan cuma
+        // rujukan file) — disimpan supaya add() tahu properti apa saja
+        // yang ada tanpa perlu fetch ulang.
+        this._pickedGeo = null;
+
+        this.el.file.addEventListener("change", () => this.upload());
+
+        bindModalClose(this.el.root, () => this.close());
+
+        this.el.add.addEventListener("click", () => this.add());
+    }
+
+    async load() {
+        const r = await fetch(this.url, { cache: "no-store" });
+        if (!r.ok) throw new Error(`${r.status} ${this.url}`);
+        this.catalog = await r.json();
+
+        this.el.list.innerHTML = "";
+        (this.catalog.data || []).forEach(d => {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = "chip";
+            b.textContent = d.label;
+            b.title = d.file;
+            b.addEventListener("click", () => this.select(d));
+            b._d = d;
+            this.el.list.appendChild(b);
+        });
+
+        return this.catalog;
+    }
+
+    open()  {
+        this.el.root.hidden = false;
+        // Bersihkan sisa pilihan sebelumnya — tanpa ini dropdown field
+        // bisa menampilkan properti dari data yang berbeda kalau popup
+        // dibuka lagi setelah sebelumnya sempat pilih data lain.
+        this.pick = null;
+        this._pickedGeo = null;
+        this.populateLabelFields([]);
+        this.el.add.disabled = true;
+        this.el.hint.textContent = "Pilih data atau unggah file.";
+        [...this.el.list.children].forEach(b => b.classList.remove("is-active"));
+    }
+    close() { this.el.root.hidden = true; }
+
+    /**
+     * Baca GeoJSON dari disk pengguna. Isinya dibawa langsung ke layer
+     * lewat spec.geo — tidak diunggah ke server dan tidak disimpan, jadi
+     * hilang saat tab ditutup.
+     */
+    upload() {
+        const f = this.el.file.files?.[0];
+        if (!f) return;
+
+        const reader = new FileReader();
+        const ext = f.name.split('.').pop().toLowerCase();
+
+        reader.onload = () => {
+            const specTemplate = {
+                id   : `upload-${Date.now()}`,
+                label: f.name.replace(/\.(geo)?json$|\.gpx$/i, ""),
+                file : `(unggahan) ${f.name}`,
+                style: { color: "#5b3fa8", weight: 1.5, dash: "solid", fill: false },
+            };
+
+            if (ext === 'gpx') {
+                // Lewatkan raw text XML untuk leaflet-gpx
+                this.onAdd({ ...specTemplate, gpx: reader.result });
+            } else {
+                // Penanganan GeoJSON eksisting
+                let geo;
+                try {
+                    geo = JSON.parse(reader.result);
+                } catch (err) {
+                    this.el.hint.textContent = `${f.name}: bukan JSON yang valid`;
+                    return;
+                }
+
+                if (!geo.type || !/Feature|Geometry|Collection/.test(geo.type)) {
+                    this.el.hint.textContent = `${f.name}: bukan GeoJSON`;
+                    return;
+                }
+                this.onAdd({ ...specTemplate, geo });
+            }
+        };
+
+        reader.onerror = () => {
+            this.el.hint.textContent = `${f.name} gagal dibaca`;
+        };
+
+        reader.readAsText(f);
+        this.el.file.value = "";
+    }
+
+    /** Nama properti unik dari seluruh feature — dipakai isi dropdown
+     *  label, di sini dan (dengan logika yang sama) di StaticLayer
+     *  sendiri untuk popup Gaya sesudah layer ditambahkan. */
+    static fieldsOf(geo) {
+        if (!geo) return [];
+        const features = geo.type === "FeatureCollection" ? geo.features
+                        : geo.type === "Feature" ? [geo]
+                        : [];
+        const keys = new Set();
+        features.forEach(f => Object.keys(f.properties || {}).forEach(k => keys.add(k)));
+        return [...keys].sort();
+    }
+
+    populateLabelFields(fields) {
+        this.el.field.innerHTML = '<option value="">Tidak ada</option>';
+        fields.forEach(k => {
+            const o = document.createElement("option");
+            o.value = k;
+            o.textContent = k;
+            this.el.field.appendChild(o);
+        });
+        this.el.fieldRow.hidden = fields.length === 0;
+    }
+
+    async select(d) {
+        this.pick = d;
+        [...this.el.list.children].forEach(b =>
+            b.classList.toggle("is-active", b._d === d));
+
+        this.el.hint.textContent = d.file;
+        this.el.add.disabled = false;
+
+        // Ambil isinya sekarang (bukan menunggu StaticLayer.load() nanti)
+        // semata supaya dropdown field label bisa diisi SEBELUM layer
+        // ditambahkan — pengguna memilih field sambil melihat pilihannya,
+        // bukan menebak nama properti lalu mengeceknya belakangan.
+        this._pickedGeo = null;
+        this.populateLabelFields([]);
+        try {
+            const r = await fetch(d.file);
+            if (r.ok) {
+                this._pickedGeo = await r.json();
+                this.populateLabelFields(StaticPicker.fieldsOf(this._pickedGeo));
+            }
+        } catch {
+            // Field label murni kenyamanan tambahan — kalau fetch di sini
+            // gagal, biarkan saja; StaticLayer akan fetch ulang saat
+            // mount() dan errornya (kalau memang berkasnya bermasalah)
+            // akan muncul jelas di situ, bukan didobelkan di sini.
+        }
+    }
+
+    add() {
+        if (!this.pick) return;
+        // Gaya bawaan dari katalog dipakai apa adanya; penyesuaiannya
+        // dilakukan di kartu setelah layer muncul di peta. label_field
+        // dari dropdown ini beda — itu cuma bisa dipilih SEKARANG,
+        // sebelum layer ada (sesudahnya juga bisa diubah lewat popup
+        // Gaya, tapi memilih di awal saat baru melihat datanya lebih
+        // wajar daripada menebak nama field belakangan).
+        const field = this.el.field.value || null;
+        this.onAdd({ ...this.pick, label_field: field, showLabel: !!field });
+    }
+}
+
+class GpxPicker {
+    constructor(onAdd) {
+        this.onAdd = onAdd;
+        this.el = {
+            root: document.getElementById("picker-gpx"),
+            file: document.getElementById("gpx-file"),
+            hint: document.getElementById("gpx-hint"),
+        };
+        this.el.file.addEventListener("change", () => this.upload());
+        bindModalClose(this.el.root, () => this.close());   // sekarang ikut menutup lewat Escape juga
+    }
+
+    open() { this.el.root.hidden = false; this.el.hint.textContent = ""; }
+    close() { this.el.root.hidden = true; }
+
+    upload() {
+        const f = this.el.file.files?.[0];
+        if (!f) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+            this.onAdd({
+                id: `upload-gpx-${Date.now()}`,
+                label: f.name.replace(/\.gpx$/i, ""),
+                gpx: reader.result,
+                style: { color: "#d81f12", weight: 3 }
+            });
+            this.close();
+        };
+        reader.onerror = () => { this.el.hint.textContent = `Gagal membaca ${f.name}`; };
+        reader.readAsText(f);
+        this.el.file.value = "";
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Popup pengaturan tampilan layer (kontur/garis, skala warna, ambang) */
+/* ------------------------------------------------------------------ */
+
+class SettingsPicker {
+
+    /** @param onChange dipanggil tiap kali sesuatu berubah, supaya app
+     *  bisa menggambar ulang kartu dan legenda. */
+    constructor(onChange) {
+        this.onChange = onChange;
+        this.layer    = null;
+
+        this.el = {
+            root           : document.getElementById("picker-settings"),
+            title          : document.getElementById("settings-title"),
+            display        : document.getElementById("settings-display"),
+            lineSection    : document.getElementById("settings-line-color-section"),
+            lineColor      : document.getElementById("settings-line-color"),
+            densitySection : document.getElementById("settings-density-section"),
+            density        : document.getElementById("settings-density"),
+            colorbars      : document.getElementById("settings-colorbars"),
+            threshold      : document.getElementById("settings-threshold"),
+        };
+
+        bindModalClose(this.el.root, () => this.close());
+    }
+
+    open(layer) {
+        this.layer = layer;
+        this.el.title.textContent = `Pengaturan \u00b7 ${layer.title}`;
+
+        this.renderDisplay();
+        this.renderLineColor();
+        this.renderDensity();
+        this.renderColorbars();
+        this.renderThreshold();
+
+        this.el.root.hidden = false;
+    }
+
+    close() {
+        this.el.root.hidden = true;
+        this.layer = null;
+    }
+
+    /* ---- tampilan: kontur terisi atau garis ---- */
+
+    renderDisplay() {
+        const wrap  = this.el.display;
+        const layer = this.layer;
+        wrap.innerHTML = "";
+
+        if (!layer.canSwitchDisplay) {
+            wrap.innerHTML = '<p class="pick-hint">Tidak tersedia untuk layer ini.</p>';
+            return;
+        }
+
+        [["fill", "Kontur (isi)"], ["line", "Garis"]].forEach(([mode, label]) => {
+            const b = document.createElement("button");
+            b.type        = "button";
+            b.className   = "chip" + (layer.displayMode === mode ? " is-active" : "");
+            b.textContent = label;
+            b.addEventListener("click", () => {
+                layer.setDisplayMode(mode);
+                [...wrap.children].forEach(c => c.classList.remove("is-active"));
+                b.classList.add("is-active");
+                // Warna solid cuma relevan di mode garis, jadi bagian
+                // ini perlu digambar ulang tiap mode berganti.
+                this.renderLineColor();
+                this.onChange?.();
+            });
+            wrap.appendChild(b);
+        });
+
+        // Haluskan garis — lewat kurva B-spline (curveBasis), bukan
+        // smoothing bawaan d3-contour yang cuma soal akurasi titik
+        // potong grid. Berlaku untuk kedua mode (fill maupun line),
+        // jadi ditaruh di sini, bukan di dalam salah satu chip mode.
+        const smoothRow = document.createElement("label");
+        smoothRow.className = "fill-check smooth-line";
+        smoothRow.style.flexBasis = "100%";
+        smoothRow.style.marginTop = "4px";
+
+        const cb = document.createElement("input");
+        cb.type    = "checkbox";
+        cb.checked = !!layer.instance?.smooth;
+        cb.addEventListener("change", () => {
+            layer.setSmooth(cb.checked);
+            this.onChange?.();
+        });
+
+        smoothRow.append(cb, document.createTextNode("Haluskan garis"));
+        wrap.appendChild(smoothRow);
+    }
+
+    /* ---- warna garis: override solid, hanya untuk mode garis ---- */
+
+    /**
+     * Warna solid. Berlaku untuk dua kasus yang beda konsep tapi sama
+     * mekanismenya (keduanya lewat layer.setColor()):
+     *   - windbarb  : selalu ada, tidak ada "otomatis" karena barb tidak
+     *                 punya skala warna per-band untuk kembali ke situ.
+     *   - line (NWP): cuma relevan saat mode Garis aktif; di mode Kontur
+     *                 warna per band dari skala warna yang dipakai, jadi
+     *                 bagian ini disembunyikan dengan keterangan kenapa.
+     */
+    renderLineColor() {
+        const wrap  = this.el.lineColor;
+        const layer = this.layer;
+        wrap.innerHTML = "";
+
+        if (!layer.colorable) {
+            this.el.lineSection.hidden = true;
+            return;
+        }
+
+        if (layer.canSwitchDisplay && layer.displayMode !== "line") {
+            this.el.lineSection.hidden = false;
+            wrap.innerHTML =
+                '<p class="pick-hint">Hanya berlaku pada mode Garis. '
+              + 'Mode Kontur selalu memakai warna per band dari skala warna.</p>';
+            return;
+        }
+
+        this.el.lineSection.hidden = false;
+
+        const isBarb   = layer.renderer === "windbarb";
+        const palette  = isBarb ? BARB_SWATCHES : SWATCHES;
+        const current  = () => layer.options.color || null;
+
+        const swatches = document.createElement("div");
+        swatches.className = "swatches";
+
+        // "Otomatis" (warna per band dari skala warna) cuma masuk akal
+        // untuk kontur/garis — barb tidak punya skala warna untuk
+        // dikembalikan ke situ, jadi tombol ini tidak ditampilkan untuknya.
+        let auto = null;
+        if (!isBarb) {
+            auto = document.createElement("button");
+            auto.type = "button";
+            auto.className = "swatch swatch--auto";
+            auto.title = "Warna per band (mengikuti skala warna)";
+            auto.textContent = "A";
+        }
+
+        const buttons = palette.map(c => {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = "swatch";
+            b.style.background = c;
+            b.title = c;
+            b._c = c;
+            return b;
+        });
+
+        const custom = document.createElement("input");
+        custom.type = "color";
+        custom.className = "style-custom";
+        custom.title = "Warna lain";
+
+        const mark = () => {
+            const c = current();
+            auto?.classList.toggle("is-active", !c);
+            buttons.forEach(b =>
+                b.classList.toggle("is-active", !!c && b._c.toLowerCase() === c.toLowerCase()));
+            custom.value = c || (isBarb ? "#1a1a1a" : "#1a1a1a");
+        };
+
+        const apply = c => {
+            layer.setColor(c);
+            mark();
+            this.onChange?.();
+        };
+
+        auto?.addEventListener("click", () => apply(null));
+        buttons.forEach(b => b.addEventListener("click", () => apply(b._c)));
+        custom.addEventListener("input", () => apply(custom.value));
+
+        swatches.append(...(auto ? [auto] : []), ...buttons);
+
+        const field = document.createElement("div");
+        field.className = "color-field";
+        field.append(swatches, custom);
+
+        wrap.appendChild(field);
+        mark();
+    }
+
+    /** Kerapatan barb — jarak target antar simbol dalam piksel layar.
+     *  Hanya relevan untuk windbarb; renderer lain tidak punya konsep
+     *  ini (kontur/garis rapat mengikuti resolusi grid, bukan piksel). */
+    renderDensity() {
+        const wrap  = this.el.density;
+        const layer = this.layer;
+        wrap.innerHTML = "";
+
+        if (layer.renderer !== "windbarb") {
+            this.el.densitySection.hidden = true;
+            return;
+        }
+        this.el.densitySection.hidden = false;
+
+        const current = layer.options.targetPx || 28;
+        const presets = [
+            [18, "Rapat"],
+            [28, "Sedang"],
+            [40, "Jarang"],
+        ];
+
+        presets.forEach(([px, label]) => {
+            const b = document.createElement("button");
+            b.type        = "button";
+            b.className   = "chip" + (current === px ? " is-active" : "");
+            b.textContent = label;
+            b.title       = `\u2248 ${px}px antar barb`;
+            b.addEventListener("click", () => {
+                layer.options.targetPx = px;
+                layer.instance?.setDensity?.(px);
+                [...wrap.children].forEach(c => c.classList.remove("is-active"));
+                b.classList.add("is-active");
+                this.onChange?.();
+            });
+            wrap.appendChild(b);
+        });
+    }
+
+    /* ---- skala warna: simulasi tiap pilihan ---- */
+
+    renderColorbars() {
+        const wrap  = this.el.colorbars;
+        const layer = this.layer;
+        wrap.innerHTML = "";
+
+        if (!layer.colorbars?.length) {
+            wrap.innerHTML =
+                '<p class="pick-hint">Parameter ini tidak punya pilihan skala warna.</p>';
+            return;
+        }
+
+        layer.colorbars.forEach(name => {
+            const cb = NWP.colorbars.get(name);
+            if (!cb) return;
+
+            const opt = document.createElement("button");
+            opt.type      = "button";
+            opt.className = "colorbar-option"
+                           + (name === layer.colorbar ? " is-active" : "");
+            if (cb.note) opt.title = cb.note;
+
+            const bar = document.createElement("div");
+            bar.className = "legend-bar";
+            cb.colors.forEach(c => {
+                const cell = document.createElement("span");
+                cell.className = "legend-cell";
+                cell.style.background = c;
+                bar.appendChild(cell);
+            });
+
+            const label = document.createElement("div");
+            label.className   = "colorbar-label";
+            label.textContent = cb.label || name;
+
+            const range = document.createElement("div");
+            range.className   = "colorbar-range";
+            range.textContent = `${cb.levels[0]} \u2013 ${cb.levels.at(-1)} ${cb.unit || ""}`;
+
+            opt.append(bar, label, range);
+            opt.addEventListener("click", () => {
+                layer.setColorbar(name);
+                this.renderColorbars();   // refresh status aktif
+                this.onChange?.();
+            });
+
+            wrap.appendChild(opt);
+        });
+    }
+
+    /* ---- ambang nilai: lebih dari / kurang dari / range ---- */
+
+    renderThreshold() {
+        const wrap  = this.el.threshold;
+        const layer = this.layer;
+        wrap.innerHTML = "";
+
+        if (!layer.canSwitchDisplay) {
+            wrap.innerHTML = '<p class="pick-hint">Tidak tersedia untuk layer ini.</p>';
+            return;
+        }
+
+        const t = layer.threshold;
+
+        const chips = document.createElement("div");
+        chips.className = "chip-row";
+
+        const inputs = document.createElement("div");
+        inputs.className = "threshold-inputs";
+
+        const minInput = document.createElement("input");
+        minInput.type = "number"; minInput.step = "any";
+        minInput.placeholder = "nilai";
+        minInput.className = "threshold-num";
+        if (t?.min != null) minInput.value = t.min;
+
+        const maxInput = document.createElement("input");
+        maxInput.type = "number"; maxInput.step = "any";
+        maxInput.placeholder = t?.mode === "range" ? "sampai" : "nilai";
+        maxInput.className = "threshold-num";
+        if (t?.max != null) maxInput.value = t.max;
+
+        const dash = document.createElement("span");
+        dash.className   = "threshold-dash";
+        dash.textContent = "\u2013";
+
+        let mode = t?.mode || "none";
+
+        const layout = () => {
+            inputs.innerHTML = "";
+            inputs.hidden = mode === "none";
+            if (mode === "gt")    inputs.append(minInput);
+            if (mode === "lt")    { maxInput.placeholder = "nilai"; inputs.append(maxInput); }
+            if (mode === "range") {
+                maxInput.placeholder = "sampai";
+                inputs.append(minInput, dash, maxInput);
+            }
+        };
+
+        const apply = () => {
+            if (mode === "none") { layer.setThreshold(null); this.onChange?.(); return; }
+
+            const min = minInput.value === "" ? null : Number(minInput.value);
+            const max = maxInput.value === "" ? null : Number(maxInput.value);
+
+            // Nilai belum lengkap (mis. baru mulai mengetik "-") — jangan
+            // terapkan ambang yang tidak masuk akal sampai lengkap.
+            if (mode === "gt"    && min == null) return;
+            if (mode === "lt"    && max == null) return;
+            if (mode === "range" && (min == null || max == null)) return;
+
+            layer.setThreshold({ mode, min, max });
+            this.onChange?.();
+        };
+
+        [["none", "Tidak ada"], ["gt", "Lebih dari"],
+         ["lt", "Kurang dari"], ["range", "Range"]].forEach(([v, label]) => {
+            const b = document.createElement("button");
+            b.type        = "button";
+            b.className   = "chip" + (mode === v ? " is-active" : "");
+            b.textContent = label;
+            b.addEventListener("click", () => {
+                mode = v;
+                [...chips.children].forEach(c => c.classList.remove("is-active"));
+                b.classList.add("is-active");
+                layout();
+                apply();
+            });
+            chips.appendChild(b);
+        });
+
+        [minInput, maxInput].forEach(inp =>
+            inp.addEventListener("input", () => apply()));
+
+        layout();
+        wrap.append(chips, inputs);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Popup gaya layer (warna, garis) untuk data statis / gambar / GPX    */
+/* ------------------------------------------------------------------ */
+
+class StylePicker {
+
+    constructor(onChange) {
+        this.onChange = onChange;
+        this.layer    = null;
+
+        this.el = {
+            root        : document.getElementById("picker-style"),
+            title       : document.getElementById("style-title"),
+            color       : document.getElementById("style-color"),
+            lineSection : document.getElementById("style-line-section"),
+            line        : document.getElementById("style-line"),
+            labelSection: document.getElementById("style-label-section"),
+            label       : document.getElementById("style-label"),
+        };
+
+        bindModalClose(this.el.root, () => this.close());
+    }
+
+    open(layer) {
+        this.layer = layer;
+        this.el.title.textContent = `Gaya \u00b7 ${layer.title}`;
+
+        this.renderColor();
+        this.renderLine();
+        this.renderLabel();
+
+        this.el.root.hidden = false;
+    }
+
+    close() {
+        this.el.root.hidden = true;
+        this.layer = null;
+    }
+
+    renderColor() {
+        const wrap  = this.el.color;
+        const layer = this.layer;
+        wrap.innerHTML = "";
+
+        const swatches = document.createElement("div");
+        swatches.className = "swatches";
+
+        const buttons = SWATCHES.map(c => {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = "swatch";
+            b.style.background = c;
+            b.title = c;
+            b._c = c;
+            swatches.appendChild(b);
+            return b;
+        });
+
+        const custom = document.createElement("input");
+        custom.type      = "color";
+        custom.className = "style-custom";
+        custom.title     = "Warna lain";
+
+        const mark = () => {
+            const c = layer.style.color.toLowerCase();
+            buttons.forEach(b =>
+                b.classList.toggle("is-active", b._c.toLowerCase() === c));
+            custom.value = layer.style.color;
+        };
+
+        const apply = c => {
+            layer.setStyle({ color: c });
+            mark();
+            this.onChange?.();
+        };
+
+        buttons.forEach(b => b.addEventListener("click", () => apply(b._c)));
+        custom.addEventListener("input", () => apply(custom.value));
+
+        const field = document.createElement("div");
+        field.className = "color-field";
+        field.append(swatches, custom);
+
+        wrap.appendChild(field);
+        mark();
+    }
+
+    renderLine() {
+        const wrap  = this.el.line;
+        const layer = this.layer;
+        wrap.innerHTML = "";
+
+        // GPX belum mendukung gaya garis selain warna — bukan cacat,
+        // memang belum ada kebutuhannya.
+        if (layer.kind !== "static") {
+            this.el.lineSection.hidden = true;
+            return;
+        }
+        this.el.lineSection.hidden = false;
+
+        const dashRow = document.createElement("div");
+        dashRow.className = "chip-row";
+        [["solid", "\u2014\u2014\u2014"], ["dashed", "\u2013 \u2013 \u2013"],
+         ["dotted", "\u00b7 \u00b7 \u00b7"]].forEach(([v, label]) => {
+            const b = document.createElement("button");
+            b.type        = "button";
+            b.className   = "chip" + (layer.style.dash === v ? " is-active" : "");
+            b.textContent = label;
+            b.addEventListener("click", () => {
+                layer.setStyle({ dash: v });
+                [...dashRow.children].forEach(c => c.classList.remove("is-active"));
+                b.classList.add("is-active");
+                this.onChange?.();
+            });
+            dashRow.appendChild(b);
+        });
+
+        const weightRow = document.createElement("div");
+        weightRow.className = "chip-row";
+        [0.8, 1.2, 2, 3].forEach(v => {
+            const b = document.createElement("button");
+            b.type        = "button";
+            b.className   = "chip" + (Number(layer.style.weight) === v ? " is-active" : "");
+            b.textContent = `${v}px`;
+            b.addEventListener("click", () => {
+                layer.setStyle({ weight: v });
+                [...weightRow.children].forEach(c => c.classList.remove("is-active"));
+                b.classList.add("is-active");
+                this.onChange?.();
+            });
+            weightRow.appendChild(b);
+        });
+
+        const fill = document.createElement("label");
+        fill.className = "fill-check";
+        const fcb = document.createElement("input");
+        fcb.type    = "checkbox";
+        fcb.checked = !!layer.style.fill;
+        fcb.addEventListener("change", () => {
+            layer.setStyle({ fill: fcb.checked });
+            this.onChange?.();
+        });
+        fill.append(fcb, document.createTextNode("Poligon berisi"));
+
+        wrap.append(dashRow, weightRow, fill);
+    }
+
+    /**
+     * Field mana dari properti GeoJSON yang jadi teks label, dan
+     * apakah sedang ditampilkan. Cuma untuk layer statis (kind==="static")
+     * — GPX/lainnya belum punya kebutuhan ini, jadi bagian ini
+     * disembunyikan untuk kind lain, bukan ditampilkan kosong.
+     */
+    renderLabel() {
+        const wrap  = this.el.label;
+        const layer = this.layer;
+        wrap.innerHTML = "";
+
+        if (layer.kind !== "static" || typeof layer.availableLabelFields !== "function") {
+            this.el.labelSection.hidden = true;
+            return;
+        }
+
+        const fields = layer.availableLabelFields();
+        this.el.labelSection.hidden = false;
+
+        if (!fields.length) {
+            wrap.innerHTML =
+                '<p class="pick-hint">Data ini tidak punya properti yang bisa '
+              + 'dipakai sebagai label.</p>';
+            return;
+        }
+
+        const select = document.createElement("select");
+        const noneOpt = document.createElement("option");
+        noneOpt.value = "";
+        noneOpt.textContent = "Tidak ada";
+        select.appendChild(noneOpt);
+        fields.forEach(k => {
+            const o = document.createElement("option");
+            o.value = k;
+            o.textContent = k;
+            select.appendChild(o);
+        });
+        select.value = layer.labelField || "";
+
+        const toggle = document.createElement("label");
+        toggle.className = "fill-check";
+        const cb = document.createElement("input");
+        cb.type     = "checkbox";
+        cb.checked  = layer.showLabel;
+        cb.disabled = !layer.labelField;
+        toggle.append(cb, document.createTextNode("Tampilkan di peta"));
+
+        select.addEventListener("change", () => {
+            layer.setLabelField(select.value);
+            cb.disabled = !select.value;
+            // Memilih field baru = maksudnya mau ditampilkan; kosongkan
+            // field = otomatis matikan juga, supaya tidak ada kondisi
+            // "field terisi tapi checkbox lupa dinyalakan sebelumnya".
+            cb.checked = !!select.value;
+            layer.setShowLabel(cb.checked);
+            this.onChange?.();
+        });
+
+        cb.addEventListener("change", () => {
+            layer.setShowLabel(cb.checked);
+            this.onChange?.();
+        });
+
+        wrap.append(select, toggle);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* App                                                                 */
+/* ------------------------------------------------------------------ */
+
+class App {
+
+    constructor() {
+        this.el = {
+            status: document.getElementById("status"),
+            valid : document.getElementById("valid-line"),
+            layers: document.getElementById("layers"),
+            empty : document.getElementById("layer-empty"),
+            legend: document.getElementById("legend"),
+        };
+
+        this.map = L.map("map", { zoomControl: true })
+                    .setView(APP.center.latlng, APP.center.zoom);
+        L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}", {
+            attribution: 'Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ',
+            maxZoom: 16
+        }).addTo(this.map);
+
+        this.layers = [];   // urutan tampil: index 0 = paling atas
+        this.indexCache = new Map();   // indexUrl -> Promise(INDEX)
+
+        // Layer yang lagi menunggu "diganti datanya" (switchData()) —
+        // diisi tepat sebelum popup Add kategori terkait dibuka, dibaca
+        // (dan dikosongkan lagi) oleh insertOrReplace() saat Add ditekan.
+        // Tombol Add BIASA (bukan lewat switchData) selalu mengosongkan
+        // ini duluan, supaya switch yang dibatalkan tidak diam-diam
+        // "nempel" ke Add berikutnya yang tidak ada hubungannya.
+        this.switchingLayer = null;
+
+        // Debounce: banyak aksi (termasuk tiap step saat play berjalan)
+        // bisa memicu ini beruntun. localStorage.setItem itu sinkron dan
+        // memblokir thread utama, jadi ditulis paling cepat 1.5 detik
+        // sekali, bukan setiap kali dipanggil.
+        this._saveTimer = null;
+
+        this.timebar = new TimeBar(
+            document.getElementById("timebar-strip"),
+            iso => this.showTime(iso)
+        );
+
+        this.picker = new Picker(
+            new URL(APP.catalog, location.href).href,
+            spec => this.addLayer(spec)
+        );
+
+        this.tilePicker = new TilePicker(
+            APP.tileCatalog,
+            spec => this.addTile(spec)
+        );
+
+        this.radarPicker = new RadarPicker(
+            APP.radarCatalog,
+            spec => this.addRadar(spec)
+        );
+
+        this.ef5Picker = new Ef5Picker(
+            APP.ef5Catalog,
+            spec => this.addEf5(spec)
+        );
+
+        // Popup pengaturan tampilan (skala warna, ambang, kontur/garis)
+        // bekerja di atas layer yang sudah ada di peta, jadi tidak
+        // menerima spec seperti picker lain — cukup gambar ulang kartu
+        // dan legenda saat sesuatu berubah.
+        this.settingsPicker = new SettingsPicker(() => {
+            this.renderCards();
+            this.renderLegends();
+            this.scheduleSave();
+        });
+
+        // Popup gaya untuk data statis/gambar/GPX — pola yang sama
+        // dengan settingsPicker, hanya targetnya layer.setStyle().
+        this.stylePicker = new StylePicker(() => {
+            this.renderCards();
+            this.renderLegends();
+            this.scheduleSave();
+        });
+
+        this.staticPicker = new StaticPicker(
+            APP.staticCatalog,
+            spec => this.addStatic(spec)
+        );
+
+        this.gpxPicker = new GpxPicker(spec => this.addGpx(spec));
+        document.getElementById("btn-add-gpx").addEventListener("click", () => {
+            this.switchingLayer = null;   // Add biasa, bukan lanjutan switchData()
+            this.gpxPicker.open();
+        });
+
+        document.getElementById("btn-add")
+            .addEventListener("click", () => {
+                this.switchingLayer = null;
+                this.picker.open();
+            });
+
+        document.getElementById("btn-add-tile")
+            .addEventListener("click", () => {
+                this.switchingLayer = null;
+                this.tilePicker.open();
+            });
+
+        document.getElementById("btn-add-radar")
+            .addEventListener("click", () => {
+                this.switchingLayer = null;
+                this.radarPicker.open();
+            });
+
+        document.getElementById("btn-add-ef5")
+            .addEventListener("click", () => {
+                this.switchingLayer = null;
+                this.ef5Picker.open();
+            });
+
+        document.getElementById("btn-add-static")
+            .addEventListener("click", () => {
+                this.switchingLayer = null;
+                this.staticPicker.open();
+            });
+
+        this.bindCollapse();
+        this.bindDrawTools();
+    }
+
+    /**
+     * Alat gambar selalu tersedia; layer "Gambar" dibuat otomatis saat
+     * bentuk pertama dibuat, supaya tidak perlu dua langkah hanya untuk
+     * menandai satu area.
+     */
+    bindDrawTools() {
+        this.drawHint = document.getElementById("draw-hint");
+
+        const HINTS = {
+            rect  : "Seret untuk membuat kotak. Esc untuk batal.",
+            circle: "Seret dari titik pusat. Esc untuk batal.",
+            line  : "Klik tiap titik, Enter untuk selesai. Esc untuk batal.",
+        };
+
+        this.drawButtons = [...document.querySelectorAll(".draw-btn[data-mode]")];
+
+        this.drawButtons.forEach(b => {
+            b.addEventListener("click", () => {
+                const layer = this.ensureDrawLayer();
+                const mode  = layer.setMode(b.dataset.mode);
+
+                this.drawButtons.forEach(x =>
+                    x.classList.toggle("is-active", x.dataset.mode === mode));
+
+                this.drawHint.hidden = !mode;
+                if (mode) this.drawHint.textContent = HINTS[mode];
+            });
+        });
+
+        document.getElementById("draw-clear").addEventListener("click", () => {
+            const l = this.layers.find(x => x.kind === "draw");
+            if (l) { l.clear(); this.removeLayer(l.uid); }
+            this.drawButtons.forEach(x => x.classList.remove("is-active"));
+            this.drawHint.hidden = true;
+        });
+    }
+
+    ensureDrawLayer() {
+        let layer = this.layers.find(l => l.kind === "draw");
+        if (layer) return layer;
+
+        layer = new NWP.DrawLayer(this.map, `D${++uidSeq}`);
+        layer.mount();
+
+        // Kartu dibuat ulang tiap kali jumlah bentuk berubah supaya
+        // hitungannya di judul dan legenda tetap benar.
+        layer.onChange = () => {
+            if (!layer.count) {
+                this.removeLayer(layer.uid);   // removeLayer() sudah scheduleSave()
+                this.drawButtons.forEach(x => x.classList.remove("is-active"));
+                this.drawHint.hidden = true;
+                return;
+            }
+            this.renderCards();
+            this.renderLegends();
+            this.scheduleSave();
+        };
+
+        layer.onModeChange = mode => {
+            this.drawButtons.forEach(x =>
+                x.classList.toggle("is-active", x.dataset.mode === mode));
+            this.drawHint.hidden = !mode;
+        };
+
+        this.layers.unshift(layer);
+        this.renderCards();
+        this.applyOrder();
+        return layer;
+    }
+
+    bindCollapse() {
+        document.querySelectorAll(".panel-toggle").forEach(btn => {
+            btn.addEventListener("click", () => {
+                const body = document.getElementById(btn.dataset.target);
+                const now  = body.classList.toggle("is-collapsed");
+                btn.textContent = now ? "+" : "\u2212";
+                btn.setAttribute("aria-expanded", String(!now));
+            });
+        });
+    }
+
+    async start() {
+        this.el.status.textContent = "Memuat katalog\u2026";
+
+        // Harus selesai sebelum layer pertama dibuat: gaya diselesaikan
+        // di konstruktor Layer, dan tanpa katalog ini semua parameter
+        // yang memakai nama colorbar akan jatuh ke warna bawaan renderer.
+        try {
+            const n = await NWP.colorbars.load(APP.colorbars);
+            console.info(`${n} skala warna dimuat`);
+        } catch (e) {
+            console.warn("Katalog skala warna tidak dimuat:", e);
+        }
+        try {
+            await this.picker.load();
+        } catch (e) {
+            this.el.status.textContent =
+                `Katalog tidak bisa dimuat (${e.message}). Cek "catalog" di `
+                + `meta/parameters.json dan header CORS di server data.`;
+            console.error(e);
+            return;
+        }
+
+        if (!this.picker.catalog.models?.length) {
+            this.el.status.textContent = "Katalog kosong — belum ada data.";
+            return;
+        }
+
+        this.picker.buildModels();
+
+        // Katalog tile opsional, sama seperti katalog statis.
+        try {
+            const c = await this.tilePicker.load();
+            this.startTileRefresh(c.refresh_seconds ?? 600);
+        } catch (e) {
+            console.warn("Katalog tile tidak dimuat:", e);
+            const b = document.getElementById("btn-add-tile");
+            b.disabled = true;
+            b.title = "meta/satellite.json tidak ditemukan";
+        }
+
+        // Katalog radar opsional, sama seperti yang lain.
+        try {
+            await this.radarPicker.load();
+        } catch (e) {
+            console.warn("Katalog radar tidak dimuat:", e);
+            const b = document.getElementById("btn-add-radar");
+            b.disabled = true;
+            b.title = "meta/radar.json tidak ditemukan";
+        }
+
+        // Katalog EF5 opsional juga.
+        try {
+            await this.ef5Picker.load();
+        } catch (e) {
+            console.warn("Katalog EF5 tidak dimuat:", e);
+            const b = document.getElementById("btn-add-ef5");
+            b.disabled = true;
+            b.title = "meta/ef5.json tidak ditemukan";
+        }
+
+        // Katalog statis opsional: kalau tidak ada, tombolnya dimatikan
+        // tapi seluruh aplikasi tetap jalan.
+        try {
+            await this.staticPicker.load();
+        } catch (e) {
+            console.warn("Katalog statis tidak dimuat:", e);
+            const b = document.getElementById("btn-add-static");
+            b.disabled = true;
+            b.title = "meta/static.json tidak ditemukan";
+        }
+
+        this.el.status.textContent = "\u00a0";
+
+        const saved = loadPersisted();
+        if (saved) {
+            await this.restoreState(saved);
+        } else {
+            this.renderCards();
+        }
+    }
+
+    /** INDEX dipakai bersama beberapa layer dari produk yang sama. */
+    loadIndex(url) {
+        if (!this.indexCache.has(url)) {
+            this.indexCache.set(url, fetch(bust(url), { cache: "no-store" })
+                .then(r => {
+                    if (!r.ok) throw new Error(`${r.status} INDEX`);
+                    return r.json();
+                }));
+        }
+        return this.indexCache.get(url);
+    }
+
+    /* ---- tambah / hapus layer ---- */
+
+    /** Dipanggil tombol "ganti data" di kartu layer — buka ulang popup
+     *  Add kategori yang sesuai, tapi Add berikutnya akan MENGGANTIKAN
+     *  layer ini (posisi susun & opasitas dipertahankan), bukan
+     *  menambah layer baru di atas seperti Add biasa. */
+    switchData(layer) {
+        const pickerByKind = {
+            nwp    : this.picker,
+            radar  : this.radarPicker,
+            tile   : this.tilePicker,
+            static : this.staticPicker,
+            gpx    : this.gpxPicker,
+            geotiff: this.ef5Picker,
+        };
+        const picker = pickerByKind[layer.kind];
+        if (!picker) return;   // kind ini tidak punya popup Add (mis. draw)
+
+        this.switchingLayer = layer;
+        picker.open();
+    }
+
+    /** Dipakai SEMUA addXxx() menggantikan this.layers.unshift(layer)
+     *  langsung — kalau this.switchingLayer terisi (Add ini datang dari
+     *  switchData(), bukan tombol Add biasa), layer lama diganti DI
+     *  POSISI YANG SAMA dan dibuang lewat destroy(); kalau tidak, layer
+     *  baru ditambah di atas seperti biasa. */
+    insertOrReplace(layer) {
+        const old = this.switchingLayer;
+        this.switchingLayer = null;
+
+        if (old && this.layers.includes(old)) {
+            layer.setOpacity(old.opacity);
+            const idx = this.layers.indexOf(old);
+            old.destroy();
+            this.layers.splice(idx, 1, layer);
+        } else {
+            this.layers.unshift(layer);   // layer terbaru di atas
+        }
+    }
+
+    async addLayer(spec) {
+        this.picker.close();
+        this.el.status.textContent = "Memuat data\u2026";
+
+        let manifestUrl;
+        try {
+            const ix  = await this.loadIndex(spec.indexUrl);
+            const run = ix.runs.find(r => r.init_time === spec.init);
+            if (!run) throw new Error(`run ${spec.init} tidak ada di INDEX`);
+            manifestUrl = run.manifest;
+        } catch (e) {
+            this.el.status.textContent = `Gagal menambah layer: ${e.message}`;
+            return;
+        }
+
+        const layer = new Layer(spec, this.map);
+
+        try {
+            await layer.loadRun(manifestUrl);
+        } catch (e) {
+            layer.destroy();
+            this.el.status.textContent = `Manifest gagal dimuat: ${e.message}`;
+            return;
+        }
+
+        layer.mount();
+        this.insertOrReplace(layer);      // layer terbaru di atas, atau gantikan kalau lagi switchData()
+
+        if (!this.fitted && layer.manifest) {
+            const b = layer.manifest.bounds;
+            this.map.fitBounds([[b.la1, b.lo1], [b.la2, b.lo2]]);
+            this.fitted = true;
+        }
+
+        this.renderCards();
+        this.applyOrder();
+        this.renderLegends();
+        this.rebuildTimeline();
+        this.scheduleSave();
+    }
+
+    async addTile(spec) {
+        this.tilePicker.close();
+
+        const layer = new NWP.TileLayer(spec, this.map, `T${++uidSeq}`);
+        layer.mount();
+        this.insertOrReplace(layer);
+
+        this.renderCards();
+        this.applyOrder();
+        this.renderLegends();
+        this.rebuildTimeline();
+        this.scheduleSave();
+    }
+
+    async addRadar(spec) {
+        this.radarPicker.close();
+        this.el.status.textContent = "Memuat manifest radar\u2026";
+
+        const layer = new NWP.RadarLayer(spec, this.map, `R${++uidSeq}`);
+
+        try {
+            await layer.load();
+        } catch (e) {
+            layer.destroy();
+            this.el.status.textContent =
+                `Radar ${spec.code} gagal dimuat: ${e.message}`;
+            return;
+        }
+
+        if (!layer.times.length) {
+            layer.destroy();
+            this.el.status.textContent =
+                `Radar ${spec.code}: history di manifest kosong.`;
+            return;
+        }
+
+        layer.mount();
+        this.insertOrReplace(layer);
+
+        if (!this.fitted && layer.bounds) {
+            this.map.fitBounds(layer.bounds);
+            this.fitted = true;
+        }
+
+        this.renderCards();
+        this.applyOrder();
+        this.renderLegends();
+        this.rebuildTimeline();
+        this.el.status.textContent = "\u00a0";
+        this.scheduleSave();
+    }
+
+    async addEf5(spec) {
+        this.ef5Picker.close();
+        this.el.status.textContent = `Memuat manifest ${spec.label}\u2026`;
+
+        const layer = new NWP.GeoTiffLayer(spec, this.map, `E${++uidSeq}`);
+
+        try {
+            await layer.load();   // muat MANIFEST, bangun byTime — bukan
+                                  // satu file .tif langsung lagi.
+        } catch (e) {
+            layer.destroy();
+            this.el.status.textContent = `Gagal memuat ${spec.manifestUrl}: ${e.message}`;
+            return;
+        }
+
+        if (!layer.byTime.size) {
+            layer.destroy();
+            this.el.status.textContent = `${spec.label}: manifest tidak punya step.`;
+            return;
+        }
+
+        layer.mount();   // sengaja tidak membuat instance apa pun (lihat
+                         // komentar di geotiff-layer.js) — instance
+                         // sungguhan baru muncul lewat show() di bawah,
+                         // dipicu rebuildTimeline().
+        this.insertOrReplace(layer);
+
+        // layer.bounds() butuh instance Leaflet yang belum tentu ada di
+        // titik ini (baru dibuat show() nanti) — pakai bounds dari
+        // MANIFEST langsung, tidak perlu menunggu render pertama.
+        const mb = layer.manifest.bounds;
+        if (!this.fitted && mb) {
+            this.map.fitBounds([[mb.south, mb.west], [mb.north, mb.east]]);
+            this.fitted = true;
+        }
+
+        this.renderCards();
+        this.applyOrder();
+        this.renderLegends();
+        // hasTime=true sekarang — ini yang membuat rebuildTimeline()
+        // ikut memasukkan valid_time milik layer ini ke union timeline,
+        // dan otomatis memicu show() pertama lewat selectNearest().
+        this.rebuildTimeline();
+        this.el.status.textContent = "\u00a0";
+        this.scheduleSave();   // EF5 belum didukung serializeLayer() —
+                               // dipanggil tetap, layer lain yg sudah
+                               // ada tetap tersimpan seperti biasa.
+    }
+
+    async addGpx(spec) {
+        this.el.status.textContent = "Memuat rute GPX\u2026";
+        const layer = new NWP.GpxLayer(spec, this.map, `G${++uidSeq}`);
+        
+        await layer.load();
+        layer.mount();
+        this.insertOrReplace(layer);
+
+        this.renderCards();
+        this.applyOrder();
+        this.renderLegends();
+        if (layer.hasTime) this.rebuildTimeline();
+        
+        this.el.status.textContent = "\u00a0";
+    }
+
+    /**
+     * Jendela waktu satelit bergerak terus, jadi daftar baserun harus
+     * diperbarui berkala. Timeline dibangun ulang hanya kalau memang ada
+     * baserun baru, supaya tidak mengganggu saat pengguna sedang menonton.
+     */
+    startTileRefresh(seconds) {
+        // refresh() satelit sinkron, radar async (ambil manifest lagi);
+        // Promise.all menyamakan keduanya.
+        setInterval(async () => {
+            const tiles = this.layers.filter(l => typeof l.refresh === "function");
+            if (!tiles.length) return;
+
+            const changed = await Promise.all(tiles.map(l => l.refresh()));
+            if (changed.some(Boolean)) this.rebuildTimeline();
+        }, Math.max(60, seconds) * 1000);
+    }
+
+    async addStatic(spec) {
+        this.staticPicker.close();
+        this.el.status.textContent = "Memuat data statis\u2026";
+
+        const layer = new NWP.StaticLayer(spec, this.map, `S${++uidSeq}`);
+
+        try {
+            await layer.load();
+        } catch (e) {
+            layer.destroy();
+            this.el.status.textContent = `Gagal memuat ${spec.file}: ${e.message}`;
+            return;
+        }
+
+        layer.mount();
+        this.insertOrReplace(layer);
+
+        // Batas admin biasanya ditambahkan sebagai konteks, bukan sebagai
+        // subjek, jadi jangan geser peta kalau sudah ada layer lain.
+        if (!this.fitted) {
+            const b = layer.bounds();
+            if (b) { this.map.fitBounds(b); this.fitted = true; }
+        }
+
+        this.renderCards();
+        this.applyOrder();
+        this.renderLegends();
+        this.el.status.textContent = "\u00a0";
+        this.scheduleSave();
+    }
+
+    removeLayer(uid) {
+        const i = this.layers.findIndex(l => l.uid === uid);
+        if (i < 0) return;
+
+        // Layer gambar mungkin sedang dalam mode menggambar; destroy()
+        // memanggil setMode(null) yang mengembalikan drag peta.
+        this.layers[i].destroy();
+        this.layers.splice(i, 1);
+
+        this.renderCards();
+        this.applyOrder();
+        this.renderLegends();
+        this.rebuildTimeline();
+        this.scheduleSave();
+    }
+
+    /* ---- simpan / pulihkan state ---- */
+
+    scheduleSave() {
+        clearTimeout(this._saveTimer);
+        this._saveTimer = setTimeout(() => this.saveState(), 1500);
+    }
+
+    /** null kalau layer ini tidak punya cara aman untuk dipulihkan
+     *  (upload manual, GPX) — lihat catatan di loadPersisted(). */
+    serializeLayer(layer) {
+        const base = { kind: layer.kind, opacity: layer.opacity, on: layer.on };
+
+        switch (layer.kind) {
+            case "nwp":
+                return {
+                    ...base,
+                    spec       : layer.spec,
+                    colorbar   : layer.colorbar,
+                    threshold  : layer.threshold,
+                    displayMode: layer.canSwitchDisplay ? layer.displayMode : null,
+                    color      : layer.options.color ?? null,
+                    smooth     : layer.options.smooth ?? false,
+                };
+
+            case "static":
+                if (!layer.spec.id) return null;   // upload manual: lewati
+                return { ...base, catalogId: layer.spec.id, style: layer.style };
+
+            case "tile":
+                if (!layer.spec.id) return null;
+                return { ...base, catalogId: layer.spec.id };
+
+            case "radar":
+                return { ...base, catalogId: layer.spec.code };
+
+            case "draw":
+                return layer.count
+                    ? { ...base, geojson: layer.toGeoJSON(), style: layer.style }
+                    : null;   // kosong, tidak perlu disimpan
+
+            default:   // gpx — lihat catatan di loadPersisted()
+                return null;
+        }
+    }
+
+    saveState() {
+        const layers = this.layers
+            .map(l => this.serializeLayer(l))
+            .filter(Boolean)
+            .reverse();   // this.layers[0] = teratas; simpan urutan tampil alami
+
+        writePersisted({
+            version: STORAGE_VERSION,
+            savedAt: new Date().toISOString(),
+            currentTime: this.currentTime || null,
+            layers,
+        });
+    }
+
+    /**
+     * Dipanggil sekali di akhir start(), setelah semua katalog siap.
+     * Tiap entri dibangun ulang lewat jalur yang SAMA dengan menambah
+     * layer secara manual (addLayer/addStatic/dst), supaya tidak ada
+     * logika ganda — kalau nanti jalur itu berubah, pemulihan ikut benar
+     * tanpa perlu disentuh terpisah.
+     */
+    async restoreState(state) {
+        if (!state?.layers?.length) return;
+
+        let skipped = 0;
+
+        // add*() bisa gagal diam-diam (run sudah dihapus dari server,
+        // manifest error) dan berhenti lebih awal TANPA menambah apa pun
+        // ke this.layers. Membandingkan panjang array sebelum/sesudah
+        // adalah cara amannya untuk tahu apakah layer benar-benar
+        // bertambah — mengambil this.layers[0] begitu saja berisiko
+        // menimpa state ke layer lain yang sudah ada sebelumnya.
+        const justAdded = () =>
+            this.layers.length > lenBefore ? this.layers[0] : null;
+
+        let lenBefore;
+
+        for (const entry of state.layers) {
+            try {
+                if (entry.kind === "nwp") {
+                    lenBefore = this.layers.length;
+                    await this.addLayer(entry.spec);
+                    const layer = justAdded();
+                    if (!layer) { skipped++; continue; }
+
+                    layer.opacity = entry.opacity;
+                    layer.on      = entry.on;
+                    if (entry.colorbar)  layer.setColorbar(entry.colorbar);
+                    if (entry.threshold) layer.setThreshold(entry.threshold);
+                    if (entry.displayMode && entry.displayMode !== layer.displayMode) {
+                        layer.setDisplayMode(entry.displayMode);
+                    }
+                    if (entry.color) layer.setColor(entry.color);
+                    if (entry.smooth) layer.setSmooth(true);
+                    if (!layer.on) layer.unmount();
+                    layer.instance?.setOpacity?.(entry.opacity);
+                    layer.pane.style.opacity = String(entry.opacity);
+
+                } else if (entry.kind === "static") {
+                    const found = this.staticPicker.catalog?.data
+                        ?.find(d => d.id === entry.catalogId);
+                    if (!found) { skipped++; continue; }
+
+                    lenBefore = this.layers.length;
+                    await this.addStatic({ ...found, style: entry.style ?? found.style });
+                    const layer = justAdded();
+                    if (!layer) { skipped++; continue; }
+                    layer.opacity = entry.opacity;
+                    layer.on      = entry.on;
+
+                } else if (entry.kind === "tile") {
+                    const found = this.tilePicker.catalog?.sources
+                        ?.find(d => d.id === entry.catalogId);
+                    if (!found) { skipped++; continue; }
+
+                    lenBefore = this.layers.length;
+                    await this.addTile({ ...found, opacity: entry.opacity });
+                    const layer = justAdded();
+                    if (!layer) { skipped++; continue; }
+                    layer.on = entry.on;
+
+                } else if (entry.kind === "radar") {
+                    const spec = this.radarPicker.findSpec(entry.catalogId);
+                    if (!spec) { skipped++; continue; }
+
+                    lenBefore = this.layers.length;
+                    await this.addRadar({ ...spec, opacity: entry.opacity });
+                    const layer = justAdded();
+                    if (!layer) { skipped++; continue; }
+                    layer.on = entry.on;
+
+                } else if (entry.kind === "draw") {
+                    const layer = this.ensureDrawLayer();
+                    layer.fromGeoJSON(entry.geojson);
+                    if (entry.style) layer.setStyle(entry.style);
+                    layer.opacity = entry.opacity;
+                    layer.on      = entry.on;
+                    layer.pane.style.opacity = String(entry.opacity);
+                    if (!entry.on) layer.unmount();
+                    this.renderCards();
+                    this.applyOrder();
+                    this.renderLegends();
+                }
+            } catch (e) {
+                console.warn(`Gagal memulihkan layer ${entry.kind}:`, e);
+                skipped++;
+            }
+        }
+
+        // this.layers sekarang terurut terbalik dari state.layers (tiap
+        // add* menaruh yang baru di posisi teratas). Kembalikan ke urutan
+        // tampil yang tersimpan, alih-alih menuliskan ulang semua add*
+        // agar dukung "push" — ini titik singgungnya cukup satu tempat.
+        const order = state.layers.map(e =>
+            e.kind === "static" ? e.catalogId
+          : e.kind === "tile"   ? e.catalogId
+          : e.kind === "radar"  ? e.catalogId
+          : e.kind === "draw"   ? "draw"
+          : e.spec?.init + e.spec?.parameter + e.spec?.level);
+
+        this.layers.sort((a, b) => {
+            const keyOf = l => l.kind === "nwp"
+                ? l.spec.init + l.spec.parameter + l.spec.level
+                : (l.spec?.id ?? l.spec?.code ?? "draw");
+            return order.indexOf(keyOf(a)) - order.indexOf(keyOf(b));
+        });
+        this.applyOrder();
+        this.renderCards();
+        this.renderLegends();
+
+        if (state.currentTime) this.timebar.selectNearest(state.currentTime);
+
+        if (skipped) {
+            this.el.status.textContent =
+                `${skipped} layer tersimpan tidak bisa dipulihkan `
+              + `(datanya sudah tidak ada di katalog).`;
+        }
+    }
+
+    /* ---- panel layer ---- */
+
+    renderCards() {
+        this.el.layers.innerHTML = "";
+        this.el.empty.hidden = this.layers.length > 0;
+
+        this.layers.forEach(layer => {
+            const card = document.createElement("div");
+            // Kelas visual kartu ditentukan sepenuhnya oleh kind — satu
+            // properti, satu sumber kebenaran, bukan lima flag yang bisa
+            // saling tumpang tindih.
+            const KIND_CARD_CLASS = {
+                static : "layer-card--static",
+                gpx    : "layer-card--static",  // GPX pakai gaya kartu statis
+                radar  : "layer-card--radar",
+                tile   : "layer-card--tile",
+                draw   : "layer-card--draw",
+                geotiff: "layer-card--static",  // sama alasannya dgn GPX di atas
+            };
+            card.className = "layer-card"
+                + (KIND_CARD_CLASS[layer.kind] ? ` ${KIND_CARD_CLASS[layer.kind]}` : "");
+            card.draggable = true;
+            card.dataset.uid = layer.uid;
+            if (!layer.on) card.classList.add("is-off");
+
+            const head = document.createElement("div");
+            head.className = "layer-head";
+
+            const grip = document.createElement("span");
+            grip.className = "layer-grip";
+
+            const gripIcon = document.createElement("img");
+            gripIcon.src = "assets/grip.svg";
+            gripIcon.alt = "Drag layer";
+            gripIcon.style.width = "10px";
+            gripIcon.style.height = "16px";
+            gripIcon.style.opacity = "0.5";
+            gripIcon.style.pointerEvents = "none";
+
+            grip.appendChild(gripIcon);
+
+            const title = document.createElement("div");
+            title.className = "layer-title";
+
+            const name = document.createElement("span");
+            name.className   = "layer-name";
+            name.textContent = layer.title;
+            name.title       = layer.spec.long_name || layer.title;
+
+            const origin = document.createElement("span");
+            origin.className   = "layer-origin";
+            origin.textContent = layer.origin;
+            // Sebelumnya rantai ini tidak punya cabang untuk GPX, jadi
+            // tooltip-nya jatuh ke default NWP dan mencoba membaca
+            // layer.spec.init yang tidak ada pada GPX — menghasilkan
+            // "Run Invalid Date". Sekarang satu lookup per kind, dan kind
+            // yang tidak disebut (NWP) jatuh ke default run time.
+            const KIND_TOOLTIP = {
+                draw   : "Klik kanan sebuah bentuk untuk menghapusnya",
+                static : layer.spec.file,
+                gpx    : layer.title,
+                radar  : layer.spec.manifest,
+                tile   : layer.spec.url?.split("?")[0],
+                geotiff: layer.spec.url,
+            };
+            origin.title = KIND_TOOLTIP[layer.kind]
+                ?? `Run ${NWP.time.full(layer.spec.init)}`;
+
+            title.append(name, origin);
+
+            // Pengaturan tampilan (skala warna, ambang, kontur/garis) —
+            // hanya untuk layer yang renderernya bisa itu (kontur/garis).
+            // Ditaruh sebelum tombol tampil/hapus karena sifatnya
+            // konfigurasi, bukan aksi terhadap keberadaan layer itu sendiri.
+            // Satu tombol gear, dua kemungkinan popup: pengaturan tampilan
+            // untuk SEMUA layer NWP (kontur, garis, DAN barb — kartu tidak
+            // perlu tahu rendererable-nya yang mana, cukup kind === "nwp"),
+            // gaya untuk data statis/gambar/GPX. Keduanya tidak pernah
+            // berlaku bersamaan pada layer yang sama.
+            const settingsTarget = layer.kind === "nwp" ? "nwp"
+                                  : (layer.kind === "static" || layer.kind === "gpx") ? "style"
+                                  : null;
+
+            let btnSettings = null;
+            if (settingsTarget) {
+                btnSettings = document.createElement("button");
+                btnSettings.type = "button";
+                btnSettings.className = "layer-drop layer-drop--muted";
+                btnSettings.title = settingsTarget === "nwp"
+                    ? "Pengaturan tampilan" : "Gaya layer";
+                btnSettings.setAttribute("aria-label", `${btnSettings.title} ${layer.title}`);
+
+                const gearIcon = document.createElement("img");
+                gearIcon.src = "assets/setting-slider.svg";
+                gearIcon.alt = "";
+                gearIcon.style.width = "15px";
+                gearIcon.style.height = "15px";
+                gearIcon.style.opacity = "0.7";
+                btnSettings.appendChild(gearIcon);
+
+                btnSettings.addEventListener("click", () => {
+                    if (settingsTarget === "nwp") this.settingsPicker.open(layer);
+                    else                          this.stylePicker.open(layer);
+                });
+            }
+
+            // Ganti data — buka ulang popup Add kategori ini, Add
+            // berikutnya menggantikan layer ini (bukan menambah baru).
+            // Cuma untuk kind yang punya popup Add (lihat switchData());
+            // "draw" misalnya tidak, jadi tombolnya tidak dibuat sama
+            // sekali untuk itu — bukan ditampilkan lalu dinonaktifkan.
+            const SWITCHABLE_KINDS = new Set(
+                ["nwp", "radar", "tile", "static", "gpx", "geotiff"]);
+
+            let btnSwitch = null;
+            if (SWITCHABLE_KINDS.has(layer.kind)) {
+                btnSwitch = document.createElement("button");
+                btnSwitch.type = "button";
+                btnSwitch.className = "layer-drop layer-drop--muted";
+                btnSwitch.title = "Ganti data";
+                btnSwitch.setAttribute("aria-label", `Ganti data ${layer.title}`);
+
+                const switchIcon = document.createElement("img");
+                switchIcon.src = "assets/change-data.svg";
+                switchIcon.alt = "";
+                switchIcon.style.width = "15px";
+                switchIcon.style.height = "15px";
+                switchIcon.style.opacity = "0.7";
+                btnSwitch.appendChild(switchIcon);
+
+                btnSwitch.addEventListener("click", () => this.switchData(layer));
+            }
+
+            // Tampil / sembunyi
+            const btnVis = document.createElement("button");
+            btnVis.type = "button";
+            btnVis.className = "layer-drop layer-drop--muted";
+            btnVis.title = "Tampilkan layer";
+
+            const visIcon = document.createElement("img");
+            visIcon.src = layer.on ? "assets/eye.svg" : "assets/eye-crossed.svg";
+            visIcon.alt = "";
+            visIcon.style.width = "16px";
+            visIcon.style.height = "16px";
+            visIcon.style.opacity = "0.7";
+            btnVis.appendChild(visIcon);
+
+            btnVis.addEventListener("click", () => {
+                layer.on = !layer.on;
+                visIcon.src = layer.on ? "assets/eye.svg" : "assets/eye-crossed.svg";
+
+                card.classList.toggle("is-off", !layer.on);
+                if (layer.on) {
+                    layer.mount();
+                    this.applyOrder();
+                    if (layer.hasTime && this.currentTime) {
+                        this.showTime(this.currentTime);
+                    }
+                } else {
+                    layer.unmount();
+                }
+                this.renderLegends();
+                this.timebar.markPartial(t => this.countAt(t));
+                this.scheduleSave();
+            });
+
+            // Hapus
+            const del = document.createElement("button");
+            del.type = "button";
+            del.className = "layer-drop";
+            del.title = "Hapus layer";
+            del.setAttribute("aria-label", `Hapus ${layer.title}`);
+
+            const trashIcon = document.createElement("img");
+            trashIcon.src = "assets/trash.svg";
+            trashIcon.alt = "";
+            trashIcon.style.width = "14px";
+            trashIcon.style.height = "14px";
+            trashIcon.style.opacity = "0.7";
+            del.appendChild(trashIcon);
+
+            del.addEventListener("click", () => this.removeLayer(layer.uid));
+
+            head.append(grip, title,
+                       ...(btnSettings ? [btnSettings] : []),
+                       ...(btnSwitch ? [btnSwitch] : []),
+                       btnVis, del);
+
+            const op = document.createElement("div");
+            op.className = "layer-opacity";
+
+            const range = document.createElement("input");
+            range.type = "range";
+            range.min = "0"; range.max = "1"; range.step = "0.05";
+            range.value = String(layer.opacity);
+
+            const out = document.createElement("output");
+            out.textContent = Math.round(layer.opacity * 100) + "%";
+
+            range.addEventListener("input", () => {
+                layer.setOpacity(Number(range.value));
+                out.textContent = Math.round(range.value * 100) + "%";
+                this.scheduleSave();
+            });
+            // Slider dan drag-to-reorder sama-sama memakai pointer; tanpa ini
+            // menggeser slider akan ikut menyeret kartunya.
+            range.addEventListener("pointerdown", () => { card.draggable = false; });
+            range.addEventListener("pointerup",   () => { card.draggable = true;  });
+
+            const opIcon = document.createElement("img");
+            opIcon.src = "assets/icon-opacity.svg";
+            opIcon.alt = "Opasitas";
+            opIcon.title = "Opasitas";
+            opIcon.style.width = "14px";
+            opIcon.style.height = "14px";
+            opIcon.style.opacity = "0.7";
+
+            op.append(opIcon, range, out);
+
+            card.append(head, op);
+
+            // Warna dan kerapatan barb, warna+skala kontur/garis, gaya
+            // data statis/GPX — semuanya sekarang di popup pengaturan
+            // (tombol gear), bukan di kartu. Kartu sengaja tetap cuma
+            // opasitas + tombol tampil/hapus/pengaturan.
+            this.bindDrag(card);
+            this.el.layers.appendChild(card);
+        });
+    }
+
+    bindDrag(card) {
+        card.addEventListener("dragstart", e => {
+            this.dragUid = card.dataset.uid;
+            card.classList.add("is-dragging");
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", card.dataset.uid);
+        });
+
+        card.addEventListener("dragend", () => {
+            card.classList.remove("is-dragging");
+            this.el.layers.querySelectorAll(".layer-card")
+                .forEach(c => c.classList.remove("is-over"));
+        });
+
+        card.addEventListener("dragover", e => {
+            e.preventDefault();
+            if (card.dataset.uid !== this.dragUid) card.classList.add("is-over");
+        });
+
+        card.addEventListener("dragleave", () => card.classList.remove("is-over"));
+
+        card.addEventListener("drop", e => {
+            e.preventDefault();
+            card.classList.remove("is-over");
+
+            const from = this.layers.findIndex(l => l.uid === this.dragUid);
+            const to   = this.layers.findIndex(l => l.uid === card.dataset.uid);
+            if (from < 0 || to < 0 || from === to) return;
+
+            this.layers.splice(to, 0, this.layers.splice(from, 1)[0]);
+            this.renderCards();
+            this.applyOrder();
+            this.renderLegends();
+            this.scheduleSave();
+        });
+    }
+
+    /** Kartu teratas = pane paling atas. */
+    applyOrder() {
+        this.layers.forEach((l, i) => l.setZ(Z_TOP - i * Z_GAP));
+    }
+
+    renderLegends() {
+        this.el.legend.innerHTML = "";
+
+        // Beberapa layer bisa menghasilkan legenda yang isinya identik —
+        // dua run TP yang sama-sama pakai skala "rain-line-10", dua radar
+        // dengan skala dBZ yang sama, dst. Ditandai lewat isi HTML-nya
+        // sendiri (nama + bar + tick), bukan lewat id layer, supaya yang
+        // benar-benar sama tampilannya cukup muncul sekali.
+        const seen = new Set();
+
+        this.layers.forEach(layer => {
+            // Layer statis membawa legend()-nya sendiri; layer NWP
+            // menyerahkannya ke renderer.
+            const own = layer.kind !== "nwp";
+            const make = own
+                ? (layer.on && layer.instance ? () => layer.legend() : null)
+                : (layer.instance?.legend
+                    ? () => layer.instance.legend() : null);
+            if (!make) return;
+
+            const box = document.createElement("div");
+            box.className = "legend-block";
+
+            if (!own) {
+                const name = document.createElement("span");
+                name.className   = "legend-name";
+                name.textContent = `${layer.title} \u00b7 ${layer.spec.model}`;
+                box.appendChild(name);
+            }
+
+            box.appendChild(make());
+
+            const sig = box.innerHTML;
+            if (seen.has(sig)) return;
+            seen.add(sig);
+
+            this.el.legend.appendChild(box);
+        });
+    }
+
+    /* ---- waktu ---- */
+
+    /**
+     * Berapa layer berwaktu yang punya data PERSIS di jam ini.
+     * Dipakai menandai jam di mana sebagian layer membeku — layer statis
+     * tidak ikut dihitung karena tidak punya dimensi waktu.
+     */
+    countAt(iso) {
+        return this.layers.reduce(
+            (n, l) => n + (l.hasTime && l.instance && l.byTime.has(iso) ? 1 : 0), 0);
+    }
+
+    /**
+     * Timeline = gabungan valid time semua layer. Karena tiap layer bisa
+     * memakai run berbeda, rentangnya tidak selalu sama panjang; jam yang
+     * tidak dimiliki semua layer ditandai lewat markPartial.
+     */
+    rebuildTimeline() {
+        const keep = this.timebar.times[this.timebar.index] || this.currentTime;
+
+        // Gabungan waktu semua layer berwaktu — NWP maupun tile. Kalau
+        // resolusinya berbeda, yang paling halus menentukan timeline dan
+        // layer lain membeku di step terakhirnya.
+        const set = new Set();
+        this.layers.forEach(l => {
+            if (l.hasTime) l.byTime.forEach((_, t) => set.add(t));
+        });
+
+        if (!set.size) {
+            this.timebar.clear();
+            this.currentTime = null;
+            this.el.valid.textContent = "\u2014";
+            this.el.status.textContent = "\u00a0";
+            return;
+        }
+
+        this.timebar.build([...set].sort(), t => this.countAt(t));
+        this.timebar.selectNearest(keep);
+    }
+
+    async showTime(iso) {
+        this.currentTime = iso;
+        this.el.valid.textContent = NWP.time.full(iso);
+        this.timebar.setBusy(true);
+
+        const active = this.layers.filter(l => l.hasTime && l.instance);
+
+
+        const notes = await Promise.all(
+            active.map(l => l.show(iso).then(t => t && `${l.title}: ${t}`))
+        );
+
+        if (this.currentTime !== iso) return;
+
+        this.el.status.textContent = notes.filter(Boolean).join(" \u00b7 ") || "\u00a0";
+        this.timebar.setBusy(false);
+
+        const k    = this.timebar.index;
+        const near = [];
+        for (let n = 1; n <= APP.prefetch; n++) {
+            [k - n, k + n].forEach(kk => {
+                if (this.timebar.times[kk]) near.push(this.timebar.times[kk]);
+            });
+        }
+        active.forEach(l => l.prefetch(near));
+        this.scheduleSave();
+    }
+}
+
+/* ------------------------------------------------------------------ */
+
+(async function () {
+    try {
+        APP = await loadConfig();
+    } catch (e) {
+        document.getElementById("status").textContent = `Konfigurasi: ${e.message}`;
+        console.error(e);
+        return;
+    }
+    new App().start();
+})();

@@ -1,0 +1,160 @@
+/* =====================================================================
+ * tile-layer.js — layer tile bergerak waktu (satelit, radar)
+ *
+ * Berbeda dari layer NWP: datanya raster tile dari endpoint pihak lain,
+ * dimuat Leaflet lewat <img> sehingga tidak butuh CORS. Berbeda pula dari
+ * layer statis: dia punya dimensi waktu, jadi ikut timeline.
+ *
+ * Daftar baserun dibangkitkan sendiri dari jam sekarang, bukan dibaca dari
+ * katalog, karena berubah tiap 10 menit. refresh() dipanggil berkala oleh
+ * app untuk menggeser jendela waktunya.
+ * ===================================================================== */
+
+window.NWP = window.NWP || {};
+
+NWP.TileLayer = class TimedTileLayer {
+
+    constructor(spec, map, uid) {
+        this.uid    = uid;
+        this.spec   = spec;
+        this.map    = map;
+        this.kind    = "tile";
+        this.hasTime = true;
+
+        this.step    = (spec.step_minutes  ?? 10) * 60e3;
+        this.history = (spec.history_hours ?? 6) * 3600e3;
+        this.lag     = (spec.lag_minutes   ?? 0) * 60e3;
+
+        this.on      = true;
+        this.opacity = spec.opacity ?? 1;
+
+        this.paneName = `nwp-${uid}`;
+        this.pane = map.createPane(this.paneName);
+        this.pane.style.opacity = String(this.opacity);
+
+        this.layer   = null;
+        this.current = null;   // baserun yang sedang tampil
+
+        this.times  = [];
+        this.byTime = new Map();
+        this.refresh();
+    }
+
+    get title()  { return this.spec.label; }
+    get origin() {
+        const h = this.spec.history_hours ?? 6;
+        return `Observasi \u00b7 ${this.spec.step_minutes ?? 10} menit \u00b7 ${h} jam terakhir`;
+    }
+
+    /**
+     * Bangun ulang daftar baserun: dari yang terbaru (dikurangi lag)
+     * mundur sejauh history. Dipanggil ulang tiap beberapa menit supaya
+     * jendela waktunya ikut bergerak.
+     * @returns true kalau daftarnya berubah
+     */
+    refresh() {
+        const latest = Math.floor((Date.now() - this.lag) / this.step) * this.step;
+        const first  = latest - this.history;
+
+        const times = [];
+        for (let t = first; t <= latest; t += this.step) {
+            times.push(new Date(t).toISOString().replace(/\.\d{3}Z$/, "Z"));
+        }
+
+        const changed = times.length !== this.times.length
+                     || times[times.length - 1] !== this.times[this.times.length - 1];
+
+        this.times  = times;
+        this.byTime = new Map(times.map(t => [t, t]));
+        return changed;
+    }
+
+    setOpacity(v) {
+        this.opacity = v;
+        this.pane.style.opacity = String(v);
+    }
+
+    setZ(z) { this.pane.style.zIndex = String(z); }
+
+    urlFor(baserun) {
+        return this.spec.url.replace("{baserun}", encodeURIComponent(baserun));
+    }
+
+    mount() {
+        if (this.layer) return;
+
+        this.layer = L.tileLayer(this.urlFor(this.current || this.times.at(-1)), {
+            pane       : this.paneName,
+            // Endpoint BMKG memakai penomoran TMS (sumbu Y terbalik).
+            // Tanpa ini citra tergeser makin jauh dari ekuator: Jawa
+            // muncul di sekitar Thailand.
+            tms        : this.spec.tms !== false,
+            minZoom    : this.spec.min_zoom ?? 0,
+            maxZoom    : this.spec.max_zoom ?? 18,
+            // Di luar rentang zoom penyedia, tile terakhir direntangkan
+            // daripada layer hilang sama sekali.
+            maxNativeZoom: this.spec.max_zoom ?? 18,
+            minNativeZoom: this.spec.min_zoom ?? 0,
+            opacity    : 1,
+            crossOrigin: false,
+            attribution: this.spec.attribution || "",
+        }).addTo(this.map);
+    }
+
+    unmount() {
+        if (!this.layer) return;
+        this.map.removeLayer(this.layer);
+        this.layer = null;
+    }
+
+    destroy() {
+        this.unmount();
+        this.pane.remove();
+    }
+
+    get instance() { return this.layer; }
+
+    /** Baserun terakhir yang <= iso. */
+    resolve(iso) {
+        const t = Date.parse(iso);
+        let hit = null;
+        for (const b of this.times) {
+            if (Date.parse(b) <= t) hit = b; else break;
+        }
+        return hit;
+    }
+
+    async show(iso) {
+        if (!this.layer) return null;
+
+        const b = this.resolve(iso);
+        if (!b) return "di luar rentang";
+
+        if (b !== this.current) {
+            this.current = b;
+            this.layer.setUrl(this.urlFor(b));
+        }
+
+        // Tandai kalau yang tampil bukan waktu yang diminta persis.
+        return b === iso ? "" : `beku di ${NWP.time.hhmm(NWP.time.parse(b))}`;
+    }
+
+    prefetch() { /* tile di-cache browser sendiri */ }
+
+    legend() {
+        const wrap = document.createElement("div");
+        wrap.className = "legend-static";
+
+        const sw = document.createElement("span");
+        sw.className = "legend-tile";
+
+        const txt = document.createElement("span");
+        txt.className   = "legend-caption";
+        txt.textContent = this.spec.attribution || this.spec.label;
+
+        wrap.append(sw, txt);
+        return wrap;
+    }
+
+    describe() { return ""; }
+};

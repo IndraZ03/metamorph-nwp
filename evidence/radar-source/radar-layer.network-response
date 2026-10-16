@@ -1,0 +1,254 @@
+/* =====================================================================
+ * radar-layer.js — overlay PNG radar (CMAX)
+ *
+ * Punya dimensi waktu seperti layer satelit, jadi ikut timeline dan
+ * mengikuti aturan freeze: menampilkan citra terakhir yang <= waktu
+ * terpilih. hasTime=true membuatnya ikut timeline; refresh() (dipanggil
+ * berkala oleh app lewat duck-typing "punya method refresh") membuatnya
+ * ikut disegarkan sama seperti layer tile.
+ *
+ * Bedanya dengan satelit: daftar waktu TIDAK dibangkitkan dari jam
+ * sekarang, melainkan dibaca dari history di manifest. Lebih andal —
+ * tidak ada tebakan jeda pemrosesan, dan citra yang tidak terbit
+ * (radar mati, berkas gagal) memang tidak akan muncul di timeline.
+ *
+ * bounds, legends, dan nama stasiun sekarang datang dari `spec`
+ * (dibangun dari radar.json saat popup Add dipakai) — BUKAN dari
+ * manifest lagi. Manifest sekarang cuma berisi { latest, history.files }
+ * dan bisa berubah tiap 10 menit tanpa perlu menulis ulang metadata
+ * statis itu tiap kali.
+ * ===================================================================== */
+
+window.NWP = window.NWP || {};
+
+// Nama berkas membawa waktu UTC: PKN-20260907-0445.png
+const RADAR_FNAME = /-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})\.png$/i;
+
+NWP.RadarLayer = class RadarLayer {
+
+    /**
+     * @param spec {code, label, product, dir, manifest, opacity,
+     *              bounds: {overlayTLC, overlayBRC}, legends, Stasiun}
+     *   bounds & legends wajib ada di spec (dari radar.json), bukan
+     *   dari manifest.
+     */
+    constructor(spec, map, uid) {
+        this.uid     = uid;
+        this.spec    = spec;
+        this.map     = map;
+        this.kind    = "radar";  // ikut timeline dan penyegaran berkala
+        this.hasTime = true;
+
+        this.on      = true;
+        this.opacity = spec.opacity ?? 0.8;
+
+        this.paneName = `nwp-${uid}`;
+        this.pane = map.createPane(this.paneName);
+        this.pane.style.opacity = String(this.opacity);
+
+        this.overlay  = null;
+        this.current  = null;    // valid time yang sedang tampil
+        this.meta     = null;    // isi manifest (latest + history saja)
+        this.bounds   = this.computeBounds(spec.bounds);
+        this.times    = [];
+        this.byTime   = new Map();   // iso -> nama berkas
+    }
+
+    get title()  { return `Radar ${this.spec.code}`; }
+    get origin() {
+        const st = this.spec.Stasiun || this.spec.label || "";
+        return `${this.spec.product} \u00b7 ${st}`;
+    }
+
+    get instance() { return this.overlay; }
+
+    /** overlayTLC=[utara,barat], overlayBRC=[selatan,timur] -> bounds Leaflet. */
+    computeBounds(b) {
+        const src = b || {};
+        const tlc = (src.overlayTLC || []).map(Number);
+        const brc = (src.overlayBRC || []).map(Number);
+        if (tlc.length !== 2 || brc.length !== 2 || tlc.some(isNaN) || brc.some(isNaN)) {
+            console.warn(`Radar ${this.spec?.code}: bounds di catalog tidak lengkap`);
+            return null;
+        }
+        return [[brc[0], tlc[1]], [tlc[0], brc[1]]];
+    }
+
+    /**
+     * Waktu diambil dari NAMA BERKAS, bukan dari field waktu di
+     * manifest: nama berkas dalam UTC dan sejajar satu-satu dengan
+     * datanya.
+     */
+    static parseTime(fname) {
+        const m = RADAR_FNAME.exec(fname);
+        if (!m) return null;
+        const [, y, mo, d, h, mi] = m;
+        return `${y}-${mo}-${d}T${h}:${mi}:00Z`;
+    }
+
+    async load() {
+        const r = await fetch(this.spec.manifest, { cache: "no-store" });
+        if (!r.ok) throw new Error(`${r.status} ${this.spec.manifest}`);
+        this.meta = await r.json();
+
+        if (!this.bounds) {
+            // spec.bounds mungkin belum siap saat konstruksi; coba lagi.
+            this.bounds = this.computeBounds(this.spec.bounds);
+        }
+
+        this.readHistory();
+        return this.meta;
+    }
+
+    readHistory() {
+        const files = this.meta?.history?.files || [];
+        const map = new Map();
+
+        files.forEach(f => {
+            const t = RadarLayer.parseTime(f);
+            if (t) map.set(t, f);
+        });
+
+        // Berkas terbaru kadang sudah ada di `latest` sebelum masuk history.
+        const lf = this.meta?.latest?.file;
+        if (lf) {
+            const t = RadarLayer.parseTime(lf);
+            if (t) map.set(t, lf);
+        }
+
+        this.byTime = map;
+        this.times  = [...map.keys()].sort();
+    }
+
+    /** Ambil ulang manifest; true kalau daftar waktunya berubah. */
+    async refresh() {
+        const before = this.times[this.times.length - 1];
+        try {
+            await this.load();
+        } catch (e) {
+            console.warn(`Radar ${this.spec.code} gagal disegarkan:`, e);
+            return false;
+        }
+        return this.times[this.times.length - 1] !== before;
+    }
+
+    setOpacity(v) {
+        this.opacity = v;
+        this.pane.style.opacity = String(v);
+    }
+
+    setZ(z) { this.pane.style.zIndex = String(z); }
+
+    urlFor(iso) {
+        return `${this.spec.dir}/${this.byTime.get(iso)}`;
+    }
+
+    mount() {
+        if (this.overlay || !this.bounds) return;
+
+        const iso = this.current || this.times[this.times.length - 1];
+        if (!iso) return;
+
+        this.current = iso;
+        this.overlay = L.imageOverlay(this.urlFor(iso), this.bounds, {
+            pane       : this.paneName,
+            opacity    : 1,
+            interactive: false,
+            className  : "radar-layer",
+        }).addTo(this.map);
+    }
+
+    unmount() {
+        if (!this.overlay) return;
+        this.map.removeLayer(this.overlay);
+        this.overlay = null;
+    }
+
+    destroy() {
+        this.unmount();
+        this.pane.remove();
+    }
+
+    /** Citra terakhir yang <= iso. */
+    resolve(iso) {
+        const t = Date.parse(iso);
+        let hit = null;
+        for (const s of this.times) {
+            if (Date.parse(s) <= t) hit = s; else break;
+        }
+        return hit;
+    }
+
+    async show(iso) {
+        if (!this.overlay) return null;
+
+        const s = this.resolve(iso);
+        if (!s) return "di luar rentang";
+
+        if (s !== this.current) {
+            this.current = s;
+            this.overlay.setUrl(this.urlFor(s));
+        }
+
+        if (s === iso) return "";
+        return `${NWP.time.hhmm(NWP.time.parse(s))}`;
+    }
+
+    prefetch(times) {
+        // Citra di-cache browser; cukup minta gambarnya lebih awal.
+        times.forEach(iso => {
+            const s = this.resolve(iso);
+            if (s) { const im = new Image(); im.src = this.urlFor(s); }
+        });
+    }
+
+    /** Colorbar dBZ dari legends di spec (catalog), bukan manifest. */
+    legend() {
+        const lg = this.spec?.legends;
+        const wrap = document.createElement("div");
+
+        if (!lg?.colors?.length) {
+            wrap.className = "legend-static";
+            const t = document.createElement("span");
+            t.className = "legend-caption";
+            t.textContent = this.title;
+            wrap.appendChild(t);
+            return wrap;
+        }
+
+        wrap.className = "legend-item";
+
+        const bar = document.createElement("div");
+        bar.className = "legend-bar";
+        lg.colors.forEach((c, i) => {
+            const cell = document.createElement("span");
+            cell.className = "legend-cell";
+            cell.style.background = c;
+            cell.title = `${lg.levels?.[i] ?? ""} ${lg.units || ""}`;
+            bar.appendChild(cell);
+        });
+
+        const ticks = document.createElement("div");
+        ticks.className = "legend-ticks";
+        const n = (lg.levels || []).length;
+        (lg.levels || []).forEach((lv, i) => {
+            // Tampilkan selang-seling supaya label tidak berdesakan.
+            if (n > 8 && i % 2 && i !== n - 1) return;
+            const s = document.createElement("span");
+            s.textContent = lv;
+            s.style.left = `${(i / (n - 1)) * 100}%`;
+            s.style.transform = i === 0 ? "translateX(0)"
+                : i === n - 1 ? "translateX(-100%)" : "translateX(-50%)";
+            ticks.appendChild(s);
+        });
+
+        const cap = document.createElement("span");
+        cap.className = "legend-caption";
+        cap.textContent = lg.units || "dBZ";
+
+        wrap.append(bar, ticks, cap);
+        return wrap;
+    }
+
+    describe() { return ""; }
+};

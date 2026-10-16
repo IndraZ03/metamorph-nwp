@@ -1,0 +1,158 @@
+[
+  {
+    "dataset": "Weather Radar — Balikpapan (CMAX)",
+    "purpose": "Station and product metadata catalog",
+    "requestUrl": "https://cuaca.bmkg.go.id/data/public/nwp-viewer/meta/radar.json",
+    "httpMethod": "GET",
+    "queryParams": {},
+    "safeHeaders": {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Referer": "https://cuaca.bmkg.go.id/data/public/nwp-viewer/"
+    },
+    "responseStatus": 200,
+    "contentType": "application/json",
+    "exampleTimestamp": null,
+    "verificationStatus": "VERIFIED"
+  },
+  {
+    "dataset": "Weather Radar — Balikpapan (CMAX)",
+    "purpose": "Dynamic manifest with latest frame and history frames sequence",
+    "requestUrl": "https://cuaca.bmkg.go.id/data/public/nwp-viewer/data/wxr/BAL/CMAX/BAL_CMAX_latest.json",
+    "httpMethod": "GET",
+    "queryParams": {},
+    "safeHeaders": {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Referer": "https://cuaca.bmkg.go.id/data/public/nwp-viewer/"
+    },
+    "responseStatus": 200,
+    "contentType": "application/json",
+    "exampleTimestamp": "2026-10-13 20:15 UTC",
+    "verificationStatus": "VERIFIED"
+  },
+  {
+    "dataset": "Weather Radar — Balikpapan (CMAX)",
+    "purpose": "Full-extent radar composite image overlay (CMAX)",
+    "requestUrl": "https://cuaca.bmkg.go.id/data/public/nwp-viewer/data/wxr/BAL/CMAX/BAL-20261013-2015.png",
+    "httpMethod": "GET",
+    "queryParams": {},
+    "safeHeaders": {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Referer": "https://cuaca.bmkg.go.id/data/public/nwp-viewer/",
+      "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+    },
+    "responseStatus": 200,
+    "contentType": "image/webp (or image/png)",
+    "exampleTimestamp": "2026-10-13T20:15:00Z",
+    "verificationStatus": "VERIFIED"
+  },
+  {
+    "dataset": "Himawari-9 Satellite — Visible (VS)",
+    "purpose": "Satellite layer source configuration catalog",
+    "requestUrl": "https://cuaca.bmkg.go.id/data/public/nwp-viewer/meta/satellite.json",
+    "httpMethod": "GET",
+    "queryParams": {},
+    "safeHeaders": {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Referer": "https://cuaca.bmkg.go.id/data/public/nwp-viewer/"
+    },
+    "responseStatus": 200,
+    "contentType": "application/json",
+    "exampleTimestamp": null,
+    "verificationStatus": "VERIFIED"
+  },
+  {
+    "dataset": "Himawari-9 Satellite — Visible (VS)",
+    "purpose": "Raster map tile (TMS scheme) for high-resolution visible channel",
+    "requestUrl": "https://satellite.bmkg.go.id/api22/tile/7/105/63.png?tiletype=himawari9&modelname=himawari9hires&param=VS&baserun=2026-10-13T20%3A00%3A00Z",
+    "httpMethod": "GET",
+    "queryParams": {
+      "tiletype": "himawari9",
+      "modelname": "himawari9hires",
+      "param": "VS",
+      "baserun": "2026-10-13T20:00:00Z"
+    },
+    "safeHeaders": {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Referer": "https://cuaca.bmkg.go.id/"
+    },
+    "responseStatus": 200,
+    "contentType": "image/png",
+    "exampleTimestamp": "2026-10-13T20:00:00Z",
+    "verificationStatus": "VERIFIED"
+  },
+  {
+    "dataset": "Himawari-9 Satellite — Visible (VS)",
+    "purpose": "Historical frame raster map tile (T-10m)",
+    "requestUrl": "https://satellite.bmkg.go.id/api22/tile/7/105/63.png?tiletype=himawari9&modelname=himawari9hires&param=VS&baserun=2026-10-13T19%3A50%3A00Z",
+    "httpMethod": "GET",
+    "queryParams": {
+      "tiletype": "himawari9",
+      "modelname": "himawari9hires",
+      "param": "VS",
+      "baserun": "2026-10-13T19:50:00Z"
+    },
+    "safeHeaders": {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Referer": "https://cuaca.bmkg.go.id/"
+    },
+    "responseStatus": 200,
+    "contentType": "image/png",
+    "exampleTimestamp": "2026-10-13T19:50:00Z",
+    "verificationStatus": "VERIFIED"
+  },
+  {
+    "dataset": "Himawari-9 Satellite — Enhanced (EH)",
+    "purpose": "Satellite layer source configuration catalog",
+    "requestUrl": "https://cuaca.bmkg.go.id/data/public/nwp-viewer/meta/satellite.json",
+    "httpMethod": "GET",
+    "queryParams": {},
+    "safeHeaders": {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Referer": "https://cuaca.bmkg.go.id/data/public/nwp-viewer/"
+    },
+    "responseStatus": 200,
+    "contentType": "application/json",
+    "exampleTimestamp": null,
+    "verificationStatus": "VERIFIED"
+  },
+  {
+    "dataset": "Himawari-9 Satellite — Enhanced (EH)",
+    "purpose": "Raster map tile (TMS scheme) for enhanced infrared channel",
+    "requestUrl": "https://satellite.bmkg.go.id/api22/tile/7/105/63.png?tiletype=himawari9&modelname=himawari9&param=EH&baserun=2026-10-13T20%3A00%3A00Z",
+    "httpMethod": "GET",
+    "queryParams": {
+      "tiletype": "himawari9",
+      "modelname": "himawari9",
+      "param": "EH",
+      "baserun": "2026-10-13T20:00:00Z"
+    },
+    "safeHeaders": {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Referer": "https://cuaca.bmkg.go.id/"
+    },
+    "responseStatus": 200,
+    "contentType": "image/png",
+    "exampleTimestamp": "2026-10-13T20:00:00Z",
+    "verificationStatus": "VERIFIED"
+  },
+  {
+    "dataset": "Himawari-9 Satellite — Enhanced (EH)",
+    "purpose": "Historical frame raster map tile (T-10m)",
+    "requestUrl": "https://satellite.bmkg.go.id/api22/tile/7/105/63.png?tiletype=himawari9&modelname=himawari9&param=EH&baserun=2026-10-13T19%3A50%3A00Z",
+    "httpMethod": "GET",
+    "queryParams": {
+      "tiletype": "himawari9",
+      "modelname": "himawari9",
+      "param": "EH",
+      "baserun": "2026-10-13T19:50:00Z"
+    },
+    "safeHeaders": {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Referer": "https://cuaca.bmkg.go.id/"
+    },
+    "responseStatus": 200,
+    "contentType": "image/png",
+    "exampleTimestamp": "2026-10-13T19:50:00Z",
+    "verificationStatus": "VERIFIED"
+  }
+]
