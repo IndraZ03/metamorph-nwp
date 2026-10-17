@@ -6,6 +6,7 @@
   import RadarModal from './components/RadarModal.svelte';
   import SatelliteModal from './components/SatelliteModal.svelte';
   import LayerControl from './components/LayerControl.svelte';
+  import UserLayers from './components/UserLayers.svelte';
   import { proxyCuaca, proxySatelliteTile } from './services/bmkg.js';
   import {
     ECMWF_DEFAULT_VAR,
@@ -16,6 +17,7 @@
     sourceKey as ecmwfSourceKey,
     tileUrl as ecmwfTileUrl,
   } from './services/ecmwf.js';
+  import { bboxOf, colorFor, countByGeometry, layerDefs } from './services/userLayers.js';
 
   // State management using Svelte 5 runes
   let mapContainer = $state(null);
@@ -35,6 +37,10 @@
   let ecmwfKey = $state(null);
   let ecmwfPollId = null;
   let ecmwfAttribControl = null;
+
+  // User overlays (GeoJSON / GPX)
+  let userLayers = $state([]);
+  let userLayerSeq = 0;
 
   function setupCartoBoundaries(m) {
     if (!m) return;
@@ -149,6 +155,7 @@
     m.on('styledata', () => {
       if (m.isStyleLoaded()) {
         setupCartoBoundaries(m);
+        restoreUserLayers();
       }
     });
 
@@ -470,6 +477,109 @@
     activeModel = null;
     applyEcmwf(false);
   }
+
+  // ---- User overlays (GeoJSON / GPX) ----
+  function addUserLayerToMap(layer) {
+    if (!map || map.getSource(`user-${layer.id}`)) return;
+    map.addSource(`user-${layer.id}`, { type: 'geojson', data: layer.geojson });
+    const before = overlayBeforeLayer();
+    for (const def of layerDefs(layer.id, layer.color)) {
+      map.addLayer(
+        { ...def, layout: { visibility: layer.visible ? 'visible' : 'none' } },
+        before
+      );
+    }
+  }
+
+  function removeUserLayerFromMap(id) {
+    if (!map) return;
+    const src = `user-${id}`;
+    for (const suffix of ['fill', 'line', 'circle']) {
+      const lid = `${src}-${suffix}`;
+      if (map.getLayer(lid)) map.removeLayer(lid);
+    }
+    if (map.getSource(src)) map.removeSource(src);
+  }
+
+  function addUserLayer({ name, kind, geojson, color }) {
+    if (!map || !mapLoaded) return false;
+    const id = `u${Date.now().toString(36)}${(userLayerSeq++).toString(36)}`;
+    const counts = countByGeometry(geojson);
+    const layer = {
+      id,
+      name,
+      kind,
+      geojson,
+      color: color || colorFor(userLayers.length),
+      visible: true,
+      count: counts.total,
+      counts,
+      bbox: bboxOf(geojson),
+    };
+    userLayers = [...userLayers, layer];
+    addUserLayerToMap(layer);
+    if (layer.bbox) {
+      map.fitBounds(
+        [
+          [layer.bbox[0], layer.bbox[1]],
+          [layer.bbox[2], layer.bbox[3]],
+        ],
+        { padding: 48, maxZoom: 12 }
+      );
+    }
+    return true;
+  }
+
+  function toggleUserLayer(id) {
+    const layer = userLayers.find((l) => l.id === id);
+    if (!layer) return;
+    layer.visible = !layer.visible;
+    if (map) {
+      for (const suffix of ['fill', 'line', 'circle']) {
+        const lid = `user-${id}-${suffix}`;
+        if (map.getLayer(lid)) {
+          map.setLayoutProperty(lid, 'visibility', layer.visible ? 'visible' : 'none');
+        }
+      }
+    }
+    userLayers = [...userLayers];
+  }
+
+  function fitUserLayer(id) {
+    const layer = userLayers.find((l) => l.id === id);
+    if (!layer?.bbox || !map) return;
+    map.fitBounds(
+      [
+        [layer.bbox[0], layer.bbox[1]],
+        [layer.bbox[2], layer.bbox[3]],
+      ],
+      { padding: 48, maxZoom: 12 }
+    );
+  }
+
+  function removeUserLayer(id) {
+    removeUserLayerFromMap(id);
+    userLayers = userLayers.filter((l) => l.id !== id);
+  }
+
+  function renameUserLayer(id, name) {
+    const layer = userLayers.find((l) => l.id === id);
+    if (!layer) return;
+    layer.name = name;
+    userLayers = [...userLayers];
+  }
+
+  function clearUserLayers() {
+    for (const l of userLayers) removeUserLayerFromMap(l.id);
+    userLayers = [];
+  }
+
+  function restoreUserLayers() {
+    if (!map) return;
+    for (const layer of userLayers) {
+      if (!map.getSource(`user-${layer.id}`)) addUserLayerToMap(layer);
+    }
+  }
 </script>
 
 <main class="relative w-screen h-screen overflow-hidden bg-slate-100">
@@ -506,6 +616,17 @@
     onOpenRadar={() => (showRadarModal = true)}
     onOpenSatellite={() => (showSatelliteModal = true)}
     onSelectModel={handleSelectModel}
+  />
+
+  <!-- User overlays (GeoJSON / GPX) — button at top-right -->
+  <UserLayers
+    layers={userLayers}
+    onAdd={addUserLayer}
+    onToggle={toggleUserLayer}
+    onFit={fitUserLayer}
+    onRemove={removeUserLayer}
+    onClearAll={clearUserLayers}
+    onRename={renameUserLayer}
   />
 
   {#if GLOBAL_MODELS.includes(activeModel)}
