@@ -9,7 +9,7 @@ import numpy as np
 from PIL import Image
 
 from . import config
-from .colormaps import colorize
+from .colormaps import colorize, encode_numeric_rgba
 
 log = logging.getLogger("ecmwf.tiles")
 
@@ -93,9 +93,14 @@ def write_var_tiles(run_dir: Path, var_id: str, step: int, field: dict) -> int:
     west, south, east, north = config.BBOX
     dest_root = run_dir / var_id / str(step)
     staging = run_dir / ".tmp" / var_id / str(step)
+    num_dest = config.OUTPUT_DIR / "numeric" / run_dir.name / var_id / str(step)
+    num_staging = run_dir / ".tmp_numeric" / var_id / str(step)
     if staging.exists():
         shutil.rmtree(staging)
+    if num_staging.exists():
+        shutil.rmtree(num_staging)
     staging.mkdir(parents=True, exist_ok=True)
+    num_staging.mkdir(parents=True, exist_ok=True)
 
     lats = field["lats"]
     lons = field["lons"]
@@ -115,12 +120,24 @@ def write_var_tiles(run_dir: Path, var_id: str, step: int, field: dict) -> int:
             quality=config.WEBP_QUALITY,
             method=config.WEBP_METHOD,
         )
+        rgba_num = encode_numeric_rgba(sampled)
+        nout = num_staging / str(z) / str(x)
+        nout.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(rgba_num, mode="RGBA").save(
+            nout / f"{y}.webp",
+            format="WEBP",
+            lossless=True,
+        )
         count += 1
 
     dest_root.parent.mkdir(parents=True, exist_ok=True)
     if dest_root.exists():
         shutil.rmtree(dest_root)
     shutil.move(str(staging), str(dest_root))
+    num_dest.parent.mkdir(parents=True, exist_ok=True)
+    if num_dest.exists():
+        shutil.rmtree(num_dest)
+    shutil.move(str(num_staging), str(num_dest))
     return count
 
 
@@ -133,4 +150,7 @@ def write_step_tiles(run_dir: Path, step: int, fields: dict[str, dict]) -> list[
     tmp = run_dir / ".tmp"
     if tmp.exists():
         shutil.rmtree(tmp, ignore_errors=True)
+    tmpn = run_dir / ".tmp_numeric"
+    if tmpn.exists():
+        shutil.rmtree(tmpn, ignore_errors=True)
     return ready

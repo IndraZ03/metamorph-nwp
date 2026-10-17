@@ -25,3 +25,14 @@ html, body, #app {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(148, 163, 184, 0.7);
 }
+
+.nwp-inspect-popup .maplibregl-popup-content {
+  padding: 10px 12px 12px;
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
+  border: 1px solid #e2e8f0;
+}
+.nwp-inspect-popup .maplibregl-popup-close-button {
+  font-size: 16px;
+  color: #64748b;
+}

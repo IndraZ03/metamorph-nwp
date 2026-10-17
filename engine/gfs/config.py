@@ -33,6 +33,7 @@ def forecast_hours() -> list[int]:
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 DATA_DIR = os.environ.get("GFS_DATA_DIR", os.path.join(REPO_ROOT, "data", "gfs"))
 TILE_DIR = os.path.join(DATA_DIR, "tiles")
+NUMERIC_TILE_DIR = os.path.join(DATA_DIR, "tiles_numeric")
 TMP_DIR = os.path.join(DATA_DIR, "tmp")
 LATEST_FILE = os.path.join(DATA_DIR, "latest.json")
 LOCK_FILE = os.path.join(DATA_DIR, ".pipeline.lock")
@@ -143,3 +144,4 @@ VARIABLES: dict[str, Variable] = {
 
 # Tile URL template (relative to the tile server root).
 TILE_URL_TEMPLATE = "/tiles/gfs/{run}/{valid}/{variable}/{z}/{x}/{y}.webp"
+NUMERIC_TILE_URL_TEMPLATE = "/tiles/gfs-numeric/{run}/{valid}/{variable}/{z}/{x}/{y}.webp"

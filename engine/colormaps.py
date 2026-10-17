@@ -119,3 +119,24 @@ def colorize(values: np.ndarray, var_id: str) -> np.ndarray:
     lut = spec["lut"]
     rgba[valid] = lut[idx[valid]]
     return rgba
+
+
+NUMERIC_OFFSET = 1000.0
+NUMERIC_SCALE = 10.0
+
+
+def encode_numeric_rgba(data_array: np.ndarray) -> np.ndarray:
+    """Terrain-RGB-like: val = ((R<<16 | G<<8 | B) / 10) - 1000. Alpha 0 = nodata."""
+    h, w = data_array.shape
+    rgba = np.zeros((h, w, 4), dtype=np.uint8)
+    valid = np.isfinite(data_array)
+    if not np.any(valid):
+        return rgba
+    val_int = np.clip(
+        (data_array[valid] + NUMERIC_OFFSET) * NUMERIC_SCALE, 0, 16777215
+    ).astype(np.uint32)
+    rgba[valid, 0] = ((val_int >> 16) & 255).astype(np.uint8)
+    rgba[valid, 1] = ((val_int >> 8) & 255).astype(np.uint8)
+    rgba[valid, 2] = (val_int & 255).astype(np.uint8)
+    rgba[valid, 3] = 255
+    return rgba

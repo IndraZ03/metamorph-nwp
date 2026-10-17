@@ -88,6 +88,15 @@ def _write_manifest(run: datetime, timesteps: list[dict], status: str) -> dict:
         "status": status,
         "domain": dict(config.DOMAIN),
         "tile_url_template": config.TILE_URL_TEMPLATE,
+        "numeric_tile_url_template": config.NUMERIC_TILE_URL_TEMPLATE,
+        "numeric_encoding": {
+            "type": "rgb_int24",
+            "offset": 1000.0,
+            "scale": 10.0,
+            "precision": 0.1,
+            "decode_formula": "((R * 65536 + G * 256 + B) / 10.0) - 1000.0",
+            "nodata_alpha": 0,
+        },
         "zoom_min": config.ZOOM_MIN,
         "zoom_max": config.ZOOM_MAX,
         "timesteps": timesteps,
@@ -113,26 +122,31 @@ def _update_latest(run: datetime, manifest: dict) -> None:
 
 
 def _cleanup_old_runs(keep: int = config.RETENTION_RUNS) -> list[str]:
-    base = os.path.join(config.TILE_DIR, "gfs")
-    if not os.path.isdir(base):
-        return []
-    runs = sorted(d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d)))
     removed = []
-    for old in runs[:-keep] if len(runs) > keep else []:
-        shutil.rmtree(os.path.join(base, old), ignore_errors=True)
-        removed.append(old)
+    for base in (
+        os.path.join(config.TILE_DIR, "gfs"),
+        os.path.join(config.NUMERIC_TILE_DIR, "gfs"),
+    ):
+        if not os.path.isdir(base):
+            continue
+        runs = sorted(d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d)))
+        for old in runs[:-keep] if len(runs) > keep else []:
+            shutil.rmtree(os.path.join(base, old), ignore_errors=True)
+            if old not in removed:
+                removed.append(old)
     return removed
 
 
 # ---------------------------------------------------------------- main
 
 def process_run(run: datetime, max_hours: int | None = None,
-                 forecast_list: list[int] | None = None) -> dict:
+                 forecast_list: list[int] | None = None,
+                 force: bool = False) -> dict:
     """Process one GFS run end-to-end. Returns the manifest dict."""
     hours = forecast_list if forecast_list is not None else config.forecast_hours()
     if max_hours is not None:
         hours = [h for h in hours if h <= max_hours]
-    if _is_complete(run, len(hours)):
+    if not force and _is_complete(run, len(hours)):
         print(f"run {source.run_dir_name(run)} already complete, skipping")
         with open(_manifest_path(run)) as fh:
             return json.load(fh)
@@ -147,8 +161,12 @@ def process_run(run: datetime, max_hours: int | None = None,
             try:
                 meta = source.download_timestep(run, fh, raw_path)
                 grids = decode.decode_timestep(raw_path)
-                out_root = os.path.join(_run_dir(run), source.valid_dir_name(run, fh))
-                counts = render.render_timestep(grids, out_root)
+                valid_name = source.valid_dir_name(run, fh)
+                out_root = os.path.join(_run_dir(run), valid_name)
+                num_root = os.path.join(
+                    config.NUMERIC_TILE_DIR, "gfs", source.run_dir_name(run), valid_name
+                )
+                counts = render.render_timestep(grids, out_root, num_root)
                 timesteps.append({
                     "forecast_hour": fh,
                     "valid": _fmt(source.valid_time(run, fh)),
@@ -176,12 +194,12 @@ def process_run(run: datetime, max_hours: int | None = None,
     return manifest
 
 
-def run_auto(max_hours: int | None = None) -> dict:
+def run_auto(max_hours: int | None = None, force: bool = False) -> dict:
     """Find the latest available run and process it (idempotent)."""
     with _lock():
         run = source.find_latest_run()
         print(f"latest run: {source.run_dir_name(run)} ({_fmt(run)})")
-        return process_run(run, max_hours=max_hours)
+        return process_run(run, max_hours=max_hours, force=force)
 
 
 def list_runs() -> list[dict]:

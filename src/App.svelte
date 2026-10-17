@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte';
+  import { mount, onMount, unmount } from 'svelte';
   import maplibregl from 'maplibre-gl';
   import Toolbar from './components/Toolbar.svelte';
   import ParamToolbar from './components/ParamToolbar.svelte';
@@ -7,6 +7,7 @@
   import SatelliteModal from './components/SatelliteModal.svelte';
   import LayerControl from './components/LayerControl.svelte';
   import UserLayers from './components/UserLayers.svelte';
+  import NwpPopup from './components/NwpPopup.svelte';
   import { proxyCuaca, proxySatelliteTile } from './services/bmkg.js';
   import {
     ECMWF_POLL_MS,
@@ -23,6 +24,7 @@
     sourceKey as nwpSourceKey,
     tileUrl as nwpTileUrl,
   } from './services/nwp.js';
+  import { inspectValues, reverseGeocode } from './services/numericTiles.js';
   import { bboxOf, colorFor, countByGeometry, layerDefs } from './services/userLayers.js';
 
   // State management using Svelte 5 runes
@@ -43,6 +45,12 @@
   let nwpKey = $state(null);
   let nwpPollId = null;
   let nwpAttribControl = null;
+  let nwpInspect = null;
+  let nwpPopup = null;
+  let nwpPopupApp = null;
+  let nwpHost = null;
+  let nwpClickSeq = 0;
+  let nwpPop = $state({ loading: false, data: null, error: null });
 
   // User overlays (GeoJSON / GPX)
   let userLayers = $state([]);
@@ -169,8 +177,13 @@
       console.error('MapLibre error:', e);
     });
 
+    m.on('click', (e) => {
+      handleNwpClick(e).catch((err) => console.warn('NWP click', err));
+    });
+
     return () => {
       stopNwpPoll();
+      closeNwpPopup();
       m.remove();
     };
   });
@@ -199,8 +212,127 @@
     }, ECMWF_POLL_MS);
   }
 
+  function closeNwpPopup() {
+    if (nwpPopupApp) {
+      try {
+        unmount(nwpPopupApp);
+      } catch {
+        /* already gone */
+      }
+      nwpPopupApp = null;
+    }
+    nwpHost = null;
+    nwpPop.loading = false;
+    nwpPop.data = null;
+    nwpPop.error = null;
+    if (nwpPopup) {
+      const p = nwpPopup;
+      nwpPopup = null;
+      p.remove();
+    }
+  }
+
+  function setNwpPopupProps(lngLat, props) {
+    if (!map) return;
+    nwpPop.loading = props.loading ?? false;
+    nwpPop.data = props.data ?? null;
+    nwpPop.error = props.error ?? null;
+    if (!nwpHost) nwpHost = document.createElement('div');
+    if (!nwpPopupApp) {
+      nwpPopupApp = mount(NwpPopup, { target: nwpHost, props: nwpPop });
+    }
+    if (!nwpPopup) {
+      nwpPopup = new maplibregl.Popup({
+        closeButton: true,
+        closeOnClick: false,
+        focusAfterOpen: false,
+        maxWidth: '300px',
+        className: 'nwp-inspect-popup',
+      });
+      nwpPopup.on('close', () => {
+        if (nwpPopupApp) {
+          try {
+            unmount(nwpPopupApp);
+          } catch {
+            /* already gone */
+          }
+          nwpPopupApp = null;
+        }
+        nwpPopup = null;
+        nwpHost = null;
+      });
+    }
+    nwpPopup.setLngLat(lngLat).setDOMContent(nwpHost);
+    if (!nwpPopup.isOpen()) nwpPopup.addTo(map);
+  }
+
+  async function handleNwpClick(e) {
+    if (!map || !nwpInspect || !GLOBAL_MODELS.includes(activeModel)) return;
+    const { lng, lat } = e.lngLat;
+    const seq = ++nwpClickSeq;
+    const { modelId, manifest, step } = nwpInspect;
+    const spec = MODELS[modelId];
+    const base = {
+      lat,
+      lon: lng,
+      modelTitle: spec.title,
+      varId: nwpVar,
+      runTime: modelRunTime(modelId, manifest),
+      validTime: step.validTime,
+      tanggal: null,
+      nilai: {},
+      lokasi: null,
+    };
+    setNwpPopupProps([lng, lat], { loading: true, data: base, error: null });
+    const geoP = reverseGeocode(lat, lng).catch(() => null);
+    try {
+      const result = await inspectValues({
+        modelId,
+        manifest,
+        step,
+        params: paramsFor(modelId),
+        lat,
+        lon: lng,
+        zoom: map.getZoom(),
+        onPartial: (partial) => {
+          if (seq !== nwpClickSeq) return;
+          setNwpPopupProps([lng, lat], {
+            loading: true,
+            error: null,
+            data: { ...base, ...partial, lokasi: nwpPop.data?.lokasi ?? null },
+          });
+        },
+      });
+      if (seq !== nwpClickSeq) return;
+      setNwpPopupProps([lng, lat], {
+        loading: false,
+        error: null,
+        data: { ...base, ...result, lokasi: nwpPop.data?.lokasi ?? null },
+      });
+      const lokasi = await geoP;
+      if (seq !== nwpClickSeq) return;
+      if (lokasi) {
+        setNwpPopupProps([lng, lat], {
+          loading: false,
+          error: null,
+          data: { ...base, ...result, lokasi },
+        });
+      }
+    } catch (err) {
+      if (seq !== nwpClickSeq) return;
+      setNwpPopupProps([lng, lat], {
+        loading: false,
+        data: base,
+        error: err?.message || 'Gagal membaca nilai',
+      });
+    }
+  }
+
   function removeNwpLayer() {
     if (!map) return;
+    closeNwpPopup();
+    nwpInspect = null;
+    if (map.getCanvas()) map.getCanvas().style.cursor = '';
     if (map.getLayer('nwp-layer')) map.removeLayer('nwp-layer');
     if (map.getSource('nwp-source')) map.removeSource('nwp-source');
     if (map.getLayer('ecmwf-layer')) map.removeLayer('ecmwf-layer');
@@ -245,6 +377,8 @@
 
     const key = nwpSourceKey(modelId, manifest, varId, step);
     if (key === nwpKey && map.getSource('nwp-source')) {
+      nwpInspect = { modelId, manifest, step };
+      if (map.getCanvas()) map.getCanvas().style.cursor = 'crosshair';
       startNwpPoll(modelId);
       return;
     }
@@ -293,6 +427,8 @@
     nwpAttribControl = new maplibregl.AttributionControl({ compact: true });
     map.addControl(nwpAttribControl, 'bottom-right');
     nwpKey = key;
+    nwpInspect = { modelId, manifest, step };
+    if (map.getCanvas()) map.getCanvas().style.cursor = 'crosshair';
     nwpData = {
       modelId,
       title: spec.title,
@@ -613,14 +749,9 @@
         alt="BMKG Logo"
         class="h-9 w-auto object-contain filter drop-shadow-sm"
       />
-      <!-- Separator -->
-      <div class="w-px h-8 bg-slate-200"></div>
-      <!-- METAMORPH Logo (enlarged for balance with BMKG) -->
-      <img
-        src="/img/metamorph.png"
-        alt="METAMORPH Logo"
-        class="h-14 w-auto object-contain filter drop-shadow-sm"
-      />
+      <p class="text-[11px] font-semibold text-slate-800 leading-tight">
+        Badan Meteorologi,<br />Klimatologi, dan Geofisika
+      </p>
     </div>
   </div>
 

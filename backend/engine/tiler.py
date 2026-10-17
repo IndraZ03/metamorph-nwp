@@ -95,25 +95,30 @@ class TileGenerator:
                 cval=np.nan,
             )
             rgba = apply_colormap(sampled, param_key, vmin, vmax)
-            if rgba[:, :, 3].max() == 0:
+            rgba_num = encode_numeric_rgba(sampled)
+            visual_empty = int(rgba[:, :, 3].max()) == 0
+            numeric_empty = int(rgba_num[:, :, 3].max()) == 0
+            if visual_empty and numeric_empty:
                 return 0
 
             # 1. Save visual WebP tile
-            tile_dir = base_dir / str(z) / str(x)
-            tile_dir.mkdir(parents=True, exist_ok=True)
-            tile_path = tile_dir / f"{y}.webp"
+            if not visual_empty:
+                tile_dir = base_dir / str(z) / str(x)
+                tile_dir.mkdir(parents=True, exist_ok=True)
+                tile_path = tile_dir / f"{y}.webp"
+                Image.fromarray(rgba, "RGBA").save(
+                    tile_path, format="WEBP", quality=85, method=4
+                )
 
-            img = Image.fromarray(rgba, "RGBA")
-            img.save(tile_path, format="WEBP", quality=85, method=4)
-
-            # 2. Save numeric WebP tile (lossless)
-            rgba_num = encode_numeric_rgba(sampled)
-            num_dir = num_base_dir / str(z) / str(x)
-            num_dir.mkdir(parents=True, exist_ok=True)
-            num_path = num_dir / f"{y}.webp"
-
-            img_num = Image.fromarray(rgba_num, "RGBA")
-            img_num.save(num_path, format="WEBP", lossless=True)
+            # 2. Save numeric WebP tile (lossless) even if visual is empty
+            # (rain/cape/cloud = 0 must still inspect as 0, not nodata)
+            if not numeric_empty:
+                num_dir = num_base_dir / str(z) / str(x)
+                num_dir.mkdir(parents=True, exist_ok=True)
+                num_path = num_dir / f"{y}.webp"
+                Image.fromarray(rgba_num, "RGBA").save(
+                    num_path, format="WEBP", lossless=True
+                )
 
             return 1
 

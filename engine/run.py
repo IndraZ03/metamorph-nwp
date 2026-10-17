@@ -60,7 +60,12 @@ def _load_run_manifest(run_id: str) -> dict | None:
         return None
 
 
-def process_run(run_time: datetime, max_steps: int | None = None, skip_if_same: bool = True) -> dict | None:
+def process_run(
+    run_time: datetime,
+    max_steps: int | None = None,
+    skip_if_same: bool = True,
+    only_steps: list[int] | None = None,
+) -> dict | None:
     run_id = run_id_from_dt(run_time)
     hour = run_time.hour
     candidates = config.expected_steps(hour)
@@ -97,6 +102,9 @@ def process_run(run_time: datetime, max_steps: int | None = None, skip_if_same: 
 
     ready_set = {s["step"] for s in manifest["steps"] if s.get("ready")}
     pending = [s for s in found if s not in ready_set]
+    if only_steps is not None:
+        want = set(only_steps)
+        pending = [s for s in pending if s in want]
     if not skip_if_same:
         for row in manifest["steps"]:
             row["ready"] = False
@@ -145,6 +153,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-steps", type=int, default=None)
     p.add_argument("--run", type=_parse_run, default=None, help="YYYYMMDDTHH UTC")
     p.add_argument("--force", action="store_true", help="rebuild even if latest.json matches")
+    p.add_argument(
+        "--force-numeric",
+        action="store_true",
+        help="rebake ready steps that lack numeric tiles (keeps visual)",
+    )
     args = p.parse_args(argv)
 
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -157,7 +170,57 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     log.info("processing run_time=%s", run_time.isoformat())
-    manifest = process_run(run_time, max_steps=args.max_steps, skip_if_same=not args.force)
+    only_steps = None
+    if args.force_numeric and not args.force:
+        run_id = run_id_from_dt(run_time)
+        man = _load_run_manifest(run_id) or read_latest()
+        if man and man.get("run_id") == run_id:
+            now = datetime.now(timezone.utc)
+            ready_rows = [row for row in man.get("steps", []) if row.get("ready")]
+
+            def _abs(row):
+                try:
+                    t = datetime.strptime(row["valid_time"], "%Y-%m-%dT%H:%M:%SZ").replace(
+                        tzinfo=timezone.utc
+                    )
+                    return abs((t - now).total_seconds())
+                except (KeyError, TypeError, ValueError):
+                    return 1e18
+
+            ready_rows.sort(key=_abs)
+            limit = args.max_steps if args.max_steps is not None else len(ready_rows)
+            target = {row["step"] for row in ready_rows[:limit]}
+            num_root = config.OUTPUT_DIR / "numeric" / run_id
+            n_mark = 0
+            unmarked = []
+            for row in man.get("steps", []):
+                step = row.get("step")
+                if step not in target:
+                    continue
+                has_num = any(
+                    (num_root / vid / str(step)).exists()
+                    for vid in (row.get("vars") or ["t2m"])
+                )
+                if row.get("ready") and not has_num:
+                    row["ready"] = False
+                    row["vars"] = []
+                    n_mark += 1
+                    unmarked.append(step)
+            man.setdefault("numeric_tiles", config.NUMERIC_TILE_URL_TEMPLATE)
+            write_run_manifest(man)
+            only_steps = unmarked
+            log.info(
+                "force-numeric: unmarked %s steps %s missing numeric tiles",
+                n_mark,
+                sorted(unmarked),
+            )
+    process_max = None if only_steps is not None else args.max_steps
+    manifest = process_run(
+        run_time,
+        max_steps=process_max,
+        skip_if_same=not args.force,
+        only_steps=only_steps,
+    )
     if manifest is None:
         return 1
     ready = sum(1 for s in manifest["steps"] if s.get("ready"))

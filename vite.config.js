@@ -8,7 +8,9 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const ECMWF_OUT = path.resolve(ROOT, 'engine/output');
 const GFS_DATA = path.resolve(ROOT, 'data/gfs');
 const GFS_TILES = path.resolve(GFS_DATA, 'tiles/gfs');
+const GFS_NUM_TILES = path.resolve(GFS_DATA, 'tiles_numeric/gfs');
 const ICON_TILES = path.resolve(ROOT, 'data/tiles/icon');
+const ICON_NUM_TILES = path.resolve(ROOT, 'data/tiles_numeric/icon');
 
 const TYPES = {
   '.webp': 'image/webp',
@@ -30,13 +32,13 @@ function sendJson(res, obj, status = 200) {
   res.end(body);
 }
 
-function sendFile(res, target, { missingWebp = false } = {}) {
+function sendFile(res, target, { missingWebp = false, cache } = {}) {
   fs.stat(target, (err, st) => {
     if (err || !st.isFile()) {
       if (missingWebp) {
         res.statusCode = 200;
         res.setHeader('Content-Type', 'image/webp');
-        res.setHeader('Cache-Control', 'public, max-age=86400');
+        res.setHeader('Cache-Control', 'no-store');
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.end(TRANSPARENT_WEBP);
         return;
@@ -46,9 +48,11 @@ function sendFile(res, target, { missingWebp = false } = {}) {
       return;
     }
     const ext = path.extname(target).toLowerCase();
+    const cacheHeader =
+      cache || (ext === '.json' ? 'no-cache' : 'public, max-age=86400');
     res.statusCode = 200;
     res.setHeader('Content-Type', TYPES[ext] || 'application/octet-stream');
-    res.setHeader('Cache-Control', ext === '.json' ? 'no-cache' : 'public, max-age=86400');
+    res.setHeader('Cache-Control', cacheHeader);
     res.setHeader('Access-Control-Allow-Origin', '*');
     fs.createReadStream(target).pipe(res);
   });
@@ -73,7 +77,7 @@ function nwpStatic() {
         res.end('Forbidden');
         return;
       }
-      sendFile(res, target);
+      sendFile(res, target, { missingWebp: url.endsWith('.webp') });
       return;
     }
 
@@ -113,6 +117,16 @@ function nwpStatic() {
       sendFile(res, target, { missingWebp: true });
       return;
     }
+    if (url.startsWith('/tiles/gfs-numeric/') && url.endsWith('.webp')) {
+      const target = guarded(GFS_NUM_TILES, url.slice('/tiles/gfs-numeric/'.length));
+      if (!target) {
+        res.statusCode = 403;
+        res.end('Forbidden');
+        return;
+      }
+      sendFile(res, target, { missingWebp: true });
+      return;
+    }
 
     if (url === '/api/icon/manifest') {
       const latest = path.join(ICON_TILES, 'latest_manifest.json');
@@ -138,6 +152,16 @@ function nwpStatic() {
     }
     if (url.startsWith('/api/icon/tiles/') && url.endsWith('.webp')) {
       const target = guarded(ICON_TILES, url.slice('/api/icon/tiles/'.length));
+      if (!target) {
+        res.statusCode = 403;
+        res.end('Forbidden');
+        return;
+      }
+      sendFile(res, target, { missingWebp: true });
+      return;
+    }
+    if (url.startsWith('/api/icon/tiles-numeric/') && url.endsWith('.webp')) {
+      const target = guarded(ICON_NUM_TILES, url.slice('/api/icon/tiles-numeric/'.length));
       if (!target) {
         res.statusCode = 403;
         res.end('Forbidden');
@@ -210,6 +234,35 @@ export default defineConfig({
             res.statusCode = upstream.status;
             res.setHeader('Content-Type', upstream.headers.get('content-type') || 'image/png');
             res.setHeader('Cache-Control', 'public, max-age=300');
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            const arrayBuffer = await upstream.arrayBuffer();
+            res.end(Buffer.from(arrayBuffer));
+          } catch (e) {
+            res.statusCode = 502;
+            res.end(String(e));
+          }
+        });
+
+        server.middlewares.use('/api/geocode', async (req, res) => {
+          try {
+            const url = new URL(req.url, 'http://localhost');
+            const lat = Number(url.searchParams.get('lat'));
+            const lon = Number(url.searchParams.get('lon'));
+            if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+              res.statusCode = 400;
+              res.end('Invalid lat/lon');
+              return;
+            }
+            const targetUrl = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}&zoom=14&addressdetails=1`;
+            const upstream = await fetch(targetUrl, {
+              headers: {
+                'User-Agent': 'metamorph-nwp/1.0 (nwp-geocoder)',
+                Accept: 'application/json',
+              },
+            });
+            res.statusCode = upstream.status;
+            res.setHeader('Content-Type', 'application/json; charset=utf-8');
+            res.setHeader('Cache-Control', 'public, max-age=86400');
             res.setHeader('Access-Control-Allow-Origin', '*');
             const arrayBuffer = await upstream.arrayBuffer();
             res.end(Buffer.from(arrayBuffer));

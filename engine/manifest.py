@@ -50,6 +50,15 @@ def empty_manifest(run_time: datetime, steps: list[int]) -> dict:
         "minzoom": config.MINZOOM,
         "maxzoom": config.MAXZOOM,
         "tiles": config.TILE_URL_TEMPLATE,
+        "numeric_tiles": config.NUMERIC_TILE_URL_TEMPLATE,
+        "numeric_encoding": {
+            "type": "rgb_int24",
+            "offset": 1000.0,
+            "scale": 10.0,
+            "precision": 0.1,
+            "decode_formula": "((R * 65536 + G * 256 + B) / 10.0) - 1000.0",
+            "nodata_alpha": 0,
+        },
         "default_variable": config.DEFAULT_VARIABLE,
         "variables": [
             {

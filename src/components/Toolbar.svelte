@@ -38,16 +38,15 @@
       <button
         type="button"
         onclick={() => handleClick(btn)}
-        class="w-12 h-12 rounded-full flex items-center justify-center transition-all duration-200 border shadow-md relative {
+        class="w-12 h-12 rounded-full flex items-center justify-center border {
           isActive
-            ? 'bg-sky-600 text-white border-sky-600 shadow-sky-600/30 ring-4 ring-sky-500/20 scale-105'
+            ? 'bg-sky-600 text-white border-sky-600'
             : btn.enabled
-              ? 'bg-white hover:bg-slate-50 text-slate-700 hover:text-slate-900 border-slate-200 hover:border-slate-300 hover:scale-105'
-              : 'bg-slate-100 text-slate-400 border-slate-200/80 opacity-70 cursor-not-allowed'
+              ? 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+              : 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
         }"
         aria-label={btn.label}
       >
-        <!-- Icon Rendering -->
         {#if btn.icon === 'radar'}
           <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M12 2a10 10 0 0 0-10 10" />
@@ -75,10 +74,6 @@
           <span class="font-bold text-[10px] tracking-tighter">WRF</span>
         {:else if btn.icon === 'chem'}
           <span class="font-bold text-[9px] tracking-tighter">CHEM</span>
-        {/if}
-
-        {#if isActive}
-          <span class="absolute top-1 right-1 w-2 h-2 rounded-full bg-emerald-400 ring-2 ring-white animate-pulse"></span>
         {/if}
       </button>
 

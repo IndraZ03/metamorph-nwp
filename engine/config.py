@@ -25,6 +25,7 @@ LICENCE = "CC-BY-4.0"
 ATTRIBUTION = "© ECMWF IFS 0.25° (CC-BY-4.0)"
 
 TILE_URL_TEMPLATE = "/ecmwf/runs/{run_id}/{var}/{step}/{z}/{x}/{y}.webp"
+NUMERIC_TILE_URL_TEMPLATE = "/ecmwf/numeric/{run_id}/{var}/{step}/{z}/{x}/{y}.webp"
 
 # GRIB shortNames actually retrieved (RH is derived from 2t+2d)
 FETCH_PARAMS = ["2t", "2d", "msl", "tp", "mucape", "tcc"]

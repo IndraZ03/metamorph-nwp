@@ -30,6 +30,8 @@ def main(argv: list[str] | None = None) -> int:
     p_all.add_argument("--run", default="auto", help="auto or YYYYMMDDHH")
     p_all.add_argument("--max-hours", type=int, default=None,
                        help="only process forecast hours <= N (testing)")
+    p_all.add_argument("--force", action="store_true",
+                       help="rebuild even if the run is already complete")
 
     sub.add_parser("latest", help="show latest available run on S3")
     sub.add_parser("list", help="list processed runs on disk")
@@ -42,11 +44,11 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.cmd == "all":
         if args.run == "auto":
-            pipeline.run_auto(max_hours=args.max_hours)
+            pipeline.run_auto(max_hours=args.max_hours, force=args.force)
         else:
             run = _parse_run(args.run)
             with pipeline._lock():
-                pipeline.process_run(run, max_hours=args.max_hours)
+                pipeline.process_run(run, max_hours=args.max_hours, force=args.force)
     elif args.cmd == "latest":
         run = source.find_latest_run()
         print(f"latest run: {source.run_dir_name(run)} ({run:%Y-%m-%dT%H:%M:%SZ})")

@@ -128,6 +128,27 @@ def _lut(var) -> np.ndarray:
     return _LUT_CACHE[var.key]
 
 
+NUMERIC_OFFSET = 1000.0
+NUMERIC_SCALE = 10.0
+
+
+def encode_numeric_rgba(values: np.ndarray) -> np.ndarray:
+    """Terrain-RGB-like: val = ((R<<16 | G<<8 | B) / 10) - 1000. Alpha 0 = nodata."""
+    h, w = values.shape
+    rgba = np.zeros((h, w, 4), dtype=np.uint8)
+    valid = np.isfinite(values)
+    if not np.any(valid):
+        return rgba
+    val_int = np.clip(
+        (values[valid] + NUMERIC_OFFSET) * NUMERIC_SCALE, 0, 16777215
+    ).astype(np.uint32)
+    rgba[valid, 0] = ((val_int >> 16) & 255).astype(np.uint8)
+    rgba[valid, 1] = ((val_int >> 8) & 255).astype(np.uint8)
+    rgba[valid, 2] = (val_int & 255).astype(np.uint8)
+    rgba[valid, 3] = 255
+    return rgba
+
+
 def colorize(var, values: np.ndarray) -> np.ndarray:
     """Map data values to an RGBA uint8 canvas.
 
@@ -153,11 +174,12 @@ def colorize(var, values: np.ndarray) -> np.ndarray:
 
 # ---------------------------------------------------------------- tile writer
 
-def render_timestep(grids: dict, out_root: str) -> dict[str, int]:
+def render_timestep(grids: dict, out_root: str, numeric_root: str | None = None) -> dict[str, int]:
     """Render all variables of one timestep to tiles.
 
     grids: output of decode.decode_timestep (incl. '_lat'/'_lon').
     out_root: directory for this valid time, e.g. tiles/gfs/<run>/<valid>/.
+    numeric_root: optional lossless RGB-encoded values for click inspect.
     Returns {variable_key: number_of_tiles_written}.
     """
     src_lat = grids["_lat"]
@@ -174,22 +196,35 @@ def render_timestep(grids: dict, out_root: str) -> dict[str, int]:
             canvas_values = np.where(rs.inside, canvas_values, np.nan)
             rgba = colorize(var, canvas_values)
             img = Image.fromarray(rgba, mode="RGBA")
+            num_img = None
+            if numeric_root:
+                num_img = Image.fromarray(encode_numeric_rgba(canvas_values), mode="RGBA")
             for ty in range(rs.y1 - rs.y0 + 1):
                 for tx in range(rs.x1 - rs.x0 + 1):
-                    tile = img.crop((
+                    box = (
                         tx * config.TILE_SIZE, ty * config.TILE_SIZE,
                         (tx + 1) * config.TILE_SIZE, (ty + 1) * config.TILE_SIZE,
-                    ))
-                    # Skip fully-transparent tiles (outside domain).
-                    if tile.getextrema()[3] == (0, 0):
-                        continue
-                    path = os.path.join(
-                        out_root, key, str(zoom),
-                        str(rs.x0 + tx), f"{rs.y0 + ty}.webp",
                     )
-                    os.makedirs(os.path.dirname(path), exist_ok=True)
-                    tile.save(path, format="WEBP",
-                              quality=config.WEBP_QUALITY, method=config.WEBP_METHOD)
-                    written += 1
+                    tile = img.crop(box)
+                    visual_empty = tile.getextrema()[3] == (0, 0)
+                    if not visual_empty:
+                        path = os.path.join(
+                            out_root, key, str(zoom),
+                            str(rs.x0 + tx), f"{rs.y0 + ty}.webp",
+                        )
+                        os.makedirs(os.path.dirname(path), exist_ok=True)
+                        tile.save(path, format="WEBP",
+                                  quality=config.WEBP_QUALITY, method=config.WEBP_METHOD)
+                        written += 1
+                    if num_img is not None:
+                        ntile = num_img.crop(box)
+                        if ntile.getextrema()[3] == (0, 0):
+                            continue
+                        npath = os.path.join(
+                            numeric_root, key, str(zoom),
+                            str(rs.x0 + tx), f"{rs.y0 + ty}.webp",
+                        )
+                        os.makedirs(os.path.dirname(npath), exist_ok=True)
+                        ntile.save(npath, format="WEBP", lossless=True)
         counts[key] = written
     return counts

@@ -40,7 +40,27 @@ class ManifestManager:
         if self.manifest_path.exists():
             try:
                 with open(self.manifest_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    data = json.load(f)
+                data.setdefault(
+                    "numeric_tile_url_template",
+                    "/api/icon/tiles-numeric/{run}/{param}/{step}/{z}/{x}/{y}.webp",
+                )
+                data.setdefault(
+                    "point_query_url_template",
+                    "/api/icon/point?lat={lat}&lon={lon}&step={step}&run={run}&param={param}",
+                )
+                data.setdefault(
+                    "numeric_encoding",
+                    {
+                        "type": "rgb_int24",
+                        "offset": 1000.0,
+                        "scale": 10.0,
+                        "precision": 0.1,
+                        "decode_formula": "((R * 65536 + G * 256 + B) / 10.0) - 1000.0",
+                        "nodata_alpha": 0,
+                    },
+                )
+                return data
             except Exception:
                 pass
 
