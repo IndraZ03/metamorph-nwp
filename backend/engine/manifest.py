@@ -1,0 +1,128 @@
+import json
+import shutil
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, List, Optional
+
+from .config import (
+    BBOX_LAT_MIN,
+    BBOX_LAT_MAX,
+    BBOX_LON_MIN,
+    BBOX_LON_MAX,
+    PARAMETERS,
+    RETENTION_RUNS,
+    TILES_DIR,
+    ZOOM_MIN,
+    ZOOM_MAX,
+)
+
+
+def get_manifest_path(run_id: str) -> Path:
+    return TILES_DIR / run_id / "manifest.json"
+
+
+def get_global_manifest_path() -> Path:
+    return TILES_DIR / "latest_manifest.json"
+
+
+class ManifestManager:
+    """Tracks runs, steps, and generates manifest metadata."""
+
+    def __init__(self, run_meta: Dict):
+        self.run_id = run_meta["run_id"]
+        self.run_time = run_meta["run_time_iso"]
+        self.run_dir = TILES_DIR / self.run_id
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        self.manifest_path = get_manifest_path(self.run_id)
+        self.data = self._load_or_init()
+
+    def _load_or_init(self) -> Dict:
+        if self.manifest_path.exists():
+            try:
+                with open(self.manifest_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+
+        params_list = [
+            {
+                "id": k,
+                "name": v["name"],
+                "unit": v["unit"],
+                "range": v["range"],
+                "is_accum": v["is_accum"],
+            }
+            for k, v in PARAMETERS.items()
+        ]
+
+        return {
+            "model": "ICON-Global",
+            "source": "DWD Open Data",
+            "domain": {
+                "name": "Indonesia",
+                "bounds": [[BBOX_LAT_MIN, BBOX_LON_MIN], [BBOX_LAT_MAX, BBOX_LON_MAX]],
+                "zoom_min": ZOOM_MIN,
+                "zoom_max": ZOOM_MAX,
+            },
+            "run_id": self.run_id,
+            "run_time": self.run_time,
+            "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:00Z"),
+            "tile_url_template": "/api/icon/tiles/{run}/{param}/{step}/{z}/{x}/{y}.webp",
+            "parameters": params_list,
+            "timesteps": [],
+        }
+
+    def record_step_ready(self, step_int: int, step_str: str, valid_time: str, param_key: str):
+        """Mark a parameter for a timestep as rendered and ready."""
+        steps = self.data["timesteps"]
+        step_entry = next((s for s in steps if s["step"] == step_int), None)
+        if not step_entry:
+            step_entry = {
+                "step": step_int,
+                "step_str": step_str,
+                "valid_time": valid_time,
+                "params": [],
+            }
+            steps.append(step_entry)
+            steps.sort(key=lambda s: s["step"])
+
+        if param_key not in step_entry["params"]:
+            step_entry["params"].append(param_key)
+            step_entry["params"].sort()
+
+        self.data["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:00Z")
+        self.save()
+
+    def save(self):
+        with open(self.manifest_path, "w", encoding="utf-8") as f:
+            json.dump(self.data, f, indent=2)
+
+        # Update global latest pointer
+        with open(get_global_manifest_path(), "w", encoding="utf-8") as f:
+            json.dump(self.data, f, indent=2)
+
+
+def list_saved_runs() -> List[str]:
+    """List all available run IDs on disk sorted descending."""
+    if not TILES_DIR.exists():
+        return []
+    runs = []
+    for p in TILES_DIR.iterdir():
+        if p.is_dir() and p.name.isdigit() and len(p.name) == 10:
+            if (p / "manifest.json").exists():
+                runs.append(p.name)
+    runs.sort(reverse=True)
+    return runs
+
+
+def prune_old_runs(keep: int = RETENTION_RUNS):
+    """Prune runs older than the newest `keep` runs to bound disk usage."""
+    runs = list_saved_runs()
+    if len(runs) <= keep:
+        return
+
+    to_delete = runs[keep:]
+    for r in to_delete:
+        p = TILES_DIR / r
+        print(f"Pruning old run directory: {p}")
+        shutil.rmtree(p, ignore_errors=True)
