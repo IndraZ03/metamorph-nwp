@@ -2,10 +2,20 @@
   import { onMount } from 'svelte';
   import maplibregl from 'maplibre-gl';
   import Toolbar from './components/Toolbar.svelte';
+  import ParamToolbar from './components/ParamToolbar.svelte';
   import RadarModal from './components/RadarModal.svelte';
   import SatelliteModal from './components/SatelliteModal.svelte';
   import LayerControl from './components/LayerControl.svelte';
   import { proxyCuaca, proxySatelliteTile } from './services/bmkg.js';
+  import {
+    ECMWF_DEFAULT_VAR,
+    ECMWF_POLL_MS,
+    GLOBAL_MODELS,
+    fetchLatest as fetchEcmwfLatest,
+    pickStep as pickEcmwfStep,
+    sourceKey as ecmwfSourceKey,
+    tileUrl as ecmwfTileUrl,
+  } from './services/ecmwf.js';
 
   // State management using Svelte 5 runes
   let mapContainer = $state(null);
@@ -20,6 +30,11 @@
   let radarData = $state(null);
   let satelliteData = $state(null);
   let activeModel = $state(null);
+  let ecmwfVar = $state(ECMWF_DEFAULT_VAR);
+  let ecmwfData = $state(null);
+  let ecmwfKey = $state(null);
+  let ecmwfPollId = null;
+  let ecmwfAttribControl = null;
 
   function setupCartoBoundaries(m) {
     if (!m) return;
@@ -122,7 +137,6 @@
     });
 
     m.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'bottom-right');
-    m.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-left');
 
     m.on('load', () => {
       map = m;
@@ -143,9 +157,133 @@
     });
 
     return () => {
+      stopEcmwfPoll();
       m.remove();
     };
   });
+
+  function overlayBeforeLayer() {
+    if (map.getLayer('coastline_outline')) return 'coastline_outline';
+    if (map.getLayer('boundary_county')) return 'boundary_county';
+    if (map.getLayer('boundary_state')) return 'boundary_state';
+    if (map.getLayer('boundary_country_inner')) return 'boundary_country_inner';
+    if (map.getLayer('waterway_label')) return 'waterway_label';
+    if (map.getLayer('place_hamlet')) return 'place_hamlet';
+    return undefined;
+  }
+
+  function stopEcmwfPoll() {
+    if (ecmwfPollId) {
+      clearInterval(ecmwfPollId);
+      ecmwfPollId = null;
+    }
+  }
+
+  function startEcmwfPoll() {
+    stopEcmwfPoll();
+    ecmwfPollId = setInterval(() => {
+      applyEcmwf(true).catch((err) => console.warn('ECMWF poll', err));
+    }, ECMWF_POLL_MS);
+  }
+
+  function removeEcmwfLayer() {
+    if (!map) return;
+    if (map.getLayer('ecmwf-layer')) map.removeLayer('ecmwf-layer');
+    if (map.getSource('ecmwf-source')) map.removeSource('ecmwf-source');
+    if (ecmwfAttribControl) {
+      try {
+        map.removeControl(ecmwfAttribControl);
+      } catch {
+        /* already gone */
+      }
+      ecmwfAttribControl = null;
+    }
+    ecmwfKey = null;
+    ecmwfData = null;
+  }
+
+  async function applyEcmwf(on) {
+    if (!map || !mapLoaded) return;
+    if (!on) {
+      stopEcmwfPoll();
+      removeEcmwfLayer();
+      return;
+    }
+
+    let manifest;
+    try {
+      manifest = await fetchEcmwfLatest();
+    } catch (err) {
+      console.warn('ECMWF latest.json not ready', err);
+      startEcmwfPoll();
+      return;
+    }
+
+    const step = pickEcmwfStep(manifest);
+    if (!step) {
+      console.warn('ECMWF manifest has no ready steps');
+      startEcmwfPoll();
+      return;
+    }
+
+    const varId = ecmwfVar || ECMWF_DEFAULT_VAR;
+    const key = ecmwfSourceKey(manifest, varId, step.step);
+    if (key === ecmwfKey && map.getSource('ecmwf-source')) {
+      startEcmwfPoll();
+      return;
+    }
+
+    const template = ecmwfTileUrl(manifest, varId, step.step);
+    const bbox = manifest.bbox || [94.0, -11.5, 141.5, 6.5];
+    const attrib = `${manifest.attribution || '© ECMWF IFS 0.25° (CC-BY-4.0)'} · run ${manifest.run_time} · valid ${step.valid_time}`;
+
+    removeEcmwfLayer();
+
+    map.addSource('ecmwf-source', {
+      type: 'raster',
+      scheme: 'xyz',
+      tiles: [template],
+      tileSize: manifest.tile_size || 256,
+      minzoom: manifest.minzoom ?? 3,
+      maxzoom: manifest.maxzoom ?? 6,
+      bounds: bbox,
+      attribution: attrib,
+    });
+
+    let beforeLayer;
+    if (map.getLayer('radar-layer')) {
+      beforeLayer = 'radar-layer';
+    } else if (map.getLayer('satellite-layer')) {
+      beforeLayer = 'satellite-layer';
+    } else {
+      beforeLayer = overlayBeforeLayer();
+    }
+
+    map.addLayer(
+      {
+        id: 'ecmwf-layer',
+        type: 'raster',
+        source: 'ecmwf-source',
+        paint: {
+          'raster-opacity': 0.85,
+          'raster-fade-duration': 200,
+        },
+      },
+      beforeLayer
+    );
+
+    ecmwfAttribControl = new maplibregl.AttributionControl({ compact: true });
+    map.addControl(ecmwfAttribControl, 'bottom-right');
+    ecmwfKey = key;
+    ecmwfData = {
+      varId,
+      runTime: manifest.run_time,
+      validTime: step.valid_time,
+      runId: manifest.run_id,
+      step: step.step,
+    };
+    startEcmwfPoll();
+  }
 
   // Manage Radar Layer on Map
   function applyRadar(data) {
@@ -308,7 +446,29 @@
   }
 
   function handleSelectModel(modelId) {
-    activeModel = activeModel === modelId ? null : modelId;
+    const next = activeModel === modelId ? null : modelId;
+    activeModel = next;
+    if (modelId === 'ecmwf') {
+      if (next === 'ecmwf') {
+        ecmwfVar = ECMWF_DEFAULT_VAR;
+        applyEcmwf(true).catch((err) => console.warn('ECMWF toggle', err));
+      } else {
+        applyEcmwf(false);
+      }
+    } else if (ecmwfKey) {
+      applyEcmwf(false);
+    }
+  }
+
+  function handleSelectEcmwfVar(varId) {
+    if (ecmwfVar === varId) return;
+    ecmwfVar = varId;
+    applyEcmwf(true).catch((err) => console.warn('ECMWF var', err));
+  }
+
+  function closeEcmwf() {
+    activeModel = null;
+    applyEcmwf(false);
   }
 </script>
 
@@ -348,12 +508,18 @@
     onSelectModel={handleSelectModel}
   />
 
+  {#if GLOBAL_MODELS.includes(activeModel)}
+    <ParamToolbar activeVar={ecmwfVar} onSelectVar={handleSelectEcmwfVar} />
+  {/if}
+
   <!-- Active Layer Legend & Timeline Controls (Bottom Left) -->
   <LayerControl
     {radarData}
     {satelliteData}
+    {ecmwfData}
     onCloseRadar={() => applyRadar(null)}
     onCloseSatellite={() => applySatellite(null)}
+    onCloseEcmwf={closeEcmwf}
     onChangeSatelliteBaserun={changeSatelliteBaserun}
   />
 

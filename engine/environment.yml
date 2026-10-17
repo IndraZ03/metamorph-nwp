@@ -1,0 +1,15 @@
+name: ecmwf
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - eccodes
+  - cfgrib
+  - xarray
+  - numpy
+  - pillow
+  - pip
+  - pip:
+      - ecmwf-opendata
+      - mercantile

@@ -1,0 +1,6 @@
+ecmwf-opendata
+cfgrib
+xarray
+numpy
+pillow
+mercantile
