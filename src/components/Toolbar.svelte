@@ -3,14 +3,17 @@
     activeModel = null,
     radarActive = false,
     satelliteActive = false,
+    spartanActive = false,
     onOpenRadar,
     onOpenSatellite,
+    onOpenSpartan,
     onSelectModel,
   } = $props();
 
   const BUTTONS = [
     { id: 'radar', label: 'Radar', icon: 'radar', active: () => radarActive, enabled: true },
     { id: 'satelit', label: 'Satelit', icon: 'satellite', active: () => satelliteActive, enabled: true },
+    { id: 'spartan', label: 'SPARTAN', icon: 'spartan', active: () => spartanActive, enabled: true },
     { id: 'ecmwf', label: 'ECMWF', icon: 'ecmwf', active: () => activeModel === 'ecmwf', enabled: true },
     { id: 'gfs', label: 'GFS', icon: 'gfs', active: () => activeModel === 'gfs', enabled: true },
     { id: 'icon', label: 'ICON', icon: 'icon', active: () => activeModel === 'icon', enabled: true },
@@ -25,6 +28,8 @@
       onOpenRadar();
     } else if (btn.id === 'satelit') {
       onOpenSatellite();
+    } else if (btn.id === 'spartan') {
+      onOpenSpartan();
     } else {
       onSelectModel?.(btn.id);
     }
@@ -61,6 +66,10 @@
             <path d="M7.76 7.76a6 6 0 0 1 8.48 0" />
             <path d="M4.93 19.07a10 10 0 0 0 14.14 0" />
             <path d="M7.76 16.24a6 6 0 0 0 8.48 0" />
+          </svg>
+        {:else if btn.icon === 'spartan'}
+          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z" />
           </svg>
         {:else if btn.icon === 'ecmwf'}
           <span class="font-bold text-[10px] tracking-tighter">EC</span>
