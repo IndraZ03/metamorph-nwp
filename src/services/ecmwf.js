@@ -6,6 +6,7 @@ export const GLOBAL_MODELS = ['ecmwf'];
 
 export const ECMWF_PARAMS = [
   { id: 't2m', label: 'Temperature', short: 'T', units: '°C' },
+  { id: 'wind10m', label: 'Wind Speed', short: 'Wind', units: 'm/s' },
   { id: 'rh', label: 'Relative Humidity', short: 'RH', units: '%' },
   { id: 'tp', label: 'Rain accumulation', short: 'Rain', units: 'mm' },
   { id: 'msl', label: 'Pressure', short: 'P', units: 'hPa' },
@@ -16,6 +17,23 @@ export const ECMWF_PARAMS = [
 
 /** Stops must match engine/colormaps.py (t 0..1, rgb). */
 export const ECMWF_LEGENDS = {
+  wind10m: {
+    min: 0,
+    max: 30,
+    units: 'm/s',
+    label: 'Wind Speed',
+    log: false,
+    stops: [
+      [0.0, 'rgb(230,245,255)'],
+      [0.1, 'rgb(170,220,250)'],
+      [0.2, 'rgb(100,200,210)'],
+      [0.35, 'rgb(80,210,120)'],
+      [0.5, 'rgb(250,225,60)'],
+      [0.65, 'rgb(250,140,40)'],
+      [0.8, 'rgb(230,40,40)'],
+      [1.0, 'rgb(160,20,150)'],
+    ],
+  },
   t2m: {
     min: -5,
     max: 35,

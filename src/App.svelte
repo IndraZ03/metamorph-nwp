@@ -29,6 +29,7 @@
   import ForecastTimeline from './components/ForecastTimeline.svelte';
   import { inspectValues, reverseGeocode } from './services/numericTiles.js';
   import { bboxOf, colorFor, countByGeometry, layerDefs } from './services/userLayers.js';
+  import { WindOverlay } from './services/windAnimation.js';
 
   // State management using Svelte 5 runes
   let mapContainer = $state(null);
@@ -69,6 +70,12 @@
   const NWP_OPACITY = 0.85;
   const NWP_PLAY_MS = 700;
   const NWP_LOAD_MS = 2500;
+
+  // Wind animation state
+  let windActive = $state(false);
+  let windSpeed = $state(1.0);
+  let windOverlay = null;
+  let windStatus = $state({ state: 'ready', mode: 'demo', message: 'Simulasi — bukan data model' });
 
   // User overlays (GeoJSON / GPX)
   let userLayers = $state([]);
@@ -203,6 +210,10 @@
       stopNwpPoll();
       stopNwpPlay();
       closeNwpPopup();
+      if (windOverlay) {
+        windOverlay.destroy();
+        windOverlay = null;
+      }
       m.remove();
     };
   });
@@ -429,6 +440,15 @@
       runId: modelRunId(modelId, manifest),
       step: step.step,
     };
+    if (windOverlay && windActive) {
+      windOverlay.setContext({
+        modelId,
+        manifest,
+        step,
+        bbox: modelBbox(modelId, manifest),
+        zoom: modelZoom(modelId, manifest),
+      });
+    }
   }
 
   function addNwpRaster(slot, modelId, manifest, step) {
@@ -663,6 +683,7 @@
       return;
     }
 
+    if (activeModel !== modelId) return;
     const varId = nwpVar || defaultVar(modelId);
     const steps = listNwpSteps(modelId, manifest, varId);
     nwpManifest = manifest;
@@ -684,7 +705,7 @@
       return;
     }
 
-    await showNwpStep(modelId, manifest, step, { fade: false });
+    await showNwpStep(modelId, manifest, step);
     startNwpPoll(modelId);
   }
 
@@ -852,6 +873,17 @@
     const next = activeModel === modelId ? null : modelId;
     activeModel = next;
     stopNwpPlay();
+
+    if (windOverlay) {
+      if (next && GLOBAL_MODELS.includes(next) && windActive) {
+        const ctx = currentWindContext();
+        if (ctx) windOverlay.setContext(ctx);
+      } else if (!next || !GLOBAL_MODELS.includes(next)) {
+        windOverlay.stop();
+        windActive = false;
+      }
+    }
+
     if (GLOBAL_MODELS.includes(modelId)) {
       if (next) {
         nwpVar = defaultVar(next);
@@ -873,8 +905,52 @@
     }
   }
 
+  function currentWindContext() {
+    if (!GLOBAL_MODELS.includes(activeModel)) return null;
+    if (!nwpInspect || nwpInspect.modelId !== activeModel) {
+      return { modelId: activeModel, bbox: MODELS[activeModel].bbox };
+    }
+    const { modelId, manifest, step } = nwpInspect;
+    return {
+      modelId,
+      manifest,
+      step,
+      bbox: modelBbox(modelId, manifest),
+      zoom: modelZoom(modelId, manifest),
+    };
+  }
+
+  function toggleWind() {
+    windActive = !windActive;
+    if (windActive) {
+      if (!windOverlay && map) {
+        windOverlay = new WindOverlay(map, {
+          speed: windSpeed,
+          onStatus: (st) => {
+            windStatus = st;
+          },
+        });
+      }
+      windOverlay?.setSpeed(windSpeed);
+      const ctx = currentWindContext();
+      windOverlay?.setContext(ctx);
+      windOverlay?.start();
+    } else {
+      windOverlay?.stop();
+    }
+  }
+
+  function changeWindSpeed(spd) {
+    windSpeed = spd;
+    windOverlay?.setSpeed(spd);
+  }
+
   function closeNwp() {
     activeModel = null;
+    if (windOverlay) {
+      windOverlay.stop();
+      windActive = false;
+    }
     applyNwp(null);
   }
 
@@ -1032,6 +1108,11 @@
       params={paramsFor(activeModel)}
       activeVar={nwpVar}
       onSelectVar={handleSelectNwpVar}
+      {windActive}
+      {windSpeed}
+      {windStatus}
+      onToggleWind={toggleWind}
+      onChangeWindSpeed={changeWindSpeed}
     />
   {/if}
 

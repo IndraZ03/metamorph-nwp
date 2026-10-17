@@ -84,6 +84,27 @@ _TCC = _lerp(
     ]
 )
 
+_WIND = _lerp(
+    [
+        (0.00, (230, 245, 255, 120)),  # calm / light blue
+        (0.10, (170, 220, 250, 180)),
+        (0.20, (100, 200, 210, 220)),  # cyan
+        (0.35, (80, 210, 120, 240)),   # green
+        (0.50, (250, 225, 60, 250)),   # yellow
+        (0.65, (250, 140, 40, 255)),   # orange
+        (0.80, (230, 40, 40, 255)),    # red
+        (1.00, (160, 20, 150, 255)),   # purple / severe
+    ]
+)
+
+_UV = _lerp(
+    [
+        (0.00, (30, 60, 180, 255)),
+        (0.50, (245, 245, 245, 255)),
+        (1.00, (180, 30, 30, 255)),
+    ]
+)
+
 # id -> (vmin, vmax, lut, transparent_below or None, log_scale)
 SPECS: dict[str, dict] = {
     "t2m": {"vmin": -5.0, "vmax": 35.0, "lut": _TEMP, "hide_below": None, "log": False},
@@ -93,6 +114,9 @@ SPECS: dict[str, dict] = {
     "tp": {"vmin": 0.1, "vmax": 300.0, "lut": _TP, "hide_below": 0.1, "log": True},
     "cape": {"vmin": 50.0, "vmax": 4000.0, "lut": _CAPE, "hide_below": 50.0, "log": False},
     "tcc": {"vmin": 0.0, "vmax": 1.0, "lut": _TCC, "hide_below": 0.02, "log": False},
+    "wind10m": {"vmin": 0.0, "vmax": 30.0, "lut": _WIND, "hide_below": None, "log": False},
+    "u10": {"vmin": -25.0, "vmax": 25.0, "lut": _UV, "hide_below": None, "log": False},
+    "v10": {"vmin": -25.0, "vmax": 25.0, "lut": _UV, "hide_below": None, "log": False},
 }
 
 

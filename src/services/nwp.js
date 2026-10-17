@@ -17,6 +17,7 @@ export const GLOBAL_MODELS = ['ecmwf', 'gfs', 'icon'];
 
 export const GFS_PARAMS = [
   { id: 'temperature', label: 'Temperature', short: 'T', units: '°C' },
+  { id: 'wind', label: 'Wind Speed', short: 'Wind', units: 'm/s' },
   { id: 'rh', label: 'Relative Humidity', short: 'RH', units: '%' },
   { id: 'rain', label: 'Rain accumulation', short: 'Rain', units: 'mm' },
   { id: 'pressure', label: 'Pressure', short: 'P', units: 'hPa' },
@@ -27,6 +28,7 @@ export const GFS_PARAMS = [
 
 export const ICON_PARAMS = [
   { id: 't_2m', label: 'Temperature', short: 'T', units: '°C' },
+  { id: 'wind_10m', label: 'Wind Speed', short: 'Wind', units: 'm/s' },
   { id: 'relhum_2m', label: 'Relative Humidity', short: 'RH', units: '%' },
   { id: 'tot_prec', label: 'Rain accumulation', short: 'Rain', units: 'mm' },
   { id: 'pmsl', label: 'Pressure', short: 'P', units: 'hPa' },
@@ -147,6 +149,22 @@ export const GFS_LEGENDS = {
       [1.0, 'rgb(217,217,217)'],
     ],
   },
+  wind: {
+    min: 0,
+    max: 30,
+    units: 'm/s',
+    label: 'Wind Speed',
+    stops: [
+      [0.0, 'rgb(230,245,255)'],
+      [0.1, 'rgb(170,222,250)'],
+      [0.2, 'rgb(100,200,210)'],
+      [0.33, 'rgb(80,210,120)'],
+      [0.5, 'rgb(250,225,60)'],
+      [0.67, 'rgb(250,140,40)'],
+      [0.83, 'rgb(230,40,40)'],
+      [1.0, 'rgb(160,20,150)'],
+    ],
+  },
 };
 
 /** Stops must match backend/engine/colormaps.py */
@@ -247,6 +265,22 @@ export const ICON_LEGENDS = {
       [0.3, 'rgb(255,255,255)'],
       [0.6, 'rgb(255,255,255)'],
       [1.0, 'rgb(255,255,255)'],
+    ],
+  },
+  wind_10m: {
+    min: 0,
+    max: 35,
+    units: 'm/s',
+    label: 'Wind Speed',
+    stops: [
+      [0.0, 'rgb(230,245,255)'],
+      [0.1, 'rgb(170,220,250)'],
+      [0.2, 'rgb(100,200,210)'],
+      [0.35, 'rgb(80,210,120)'],
+      [0.5, 'rgb(250,225,60)'],
+      [0.65, 'rgb(250,140,40)'],
+      [0.8, 'rgb(230,40,40)'],
+      [1.0, 'rgb(160,20,150)'],
     ],
   },
 };

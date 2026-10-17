@@ -140,6 +140,26 @@ VARIABLES: dict[str, Variable] = {
         vmin=0, vmax=100, alpha="coverage",
         stops=[(0, _rgb("#ffffff")), (100, _rgb("#d9d9d9"))],
     ),
+    "u10": Variable(
+        key="u10", label="U-Wind 10 m", unit="m/s",
+        grib_var="UGRD", grib_level="10 m above ground",
+        vmin=-25, vmax=25,
+        stops=[(-25, _rgb("#1e3c72")), (0, _rgb("#ffffff")), (25, _rgb("#b10026"))],
+    ),
+    "v10": Variable(
+        key="v10", label="V-Wind 10 m", unit="m/s",
+        grib_var="VGRD", grib_level="10 m above ground",
+        vmin=-25, vmax=25,
+        stops=[(-25, _rgb("#1e3c72")), (0, _rgb("#ffffff")), (25, _rgb("#b10026"))],
+    ),
+    "wind": Variable(
+        key="wind", label="Wind Speed 10 m", unit="m/s",
+        grib_var="WIND", grib_level="10 m above ground",
+        vmin=0, vmax=30,
+        stops=[(0, _rgb("#e6f5ff")), (3, _rgb("#aadefa")), (6, _rgb("#64c8d2")),
+               (10, _rgb("#50d278")), (15, _rgb("#fae13c")), (20, _rgb("#fa8c28")),
+               (25, _rgb("#e62828")), (30, _rgb("#a01496"))],
+    ),
 }
 
 # Tile URL template (relative to the tile server root).

@@ -89,6 +89,33 @@ PARAMETERS = {
         "range": [0.0, 100.0],
         "is_accum": False,
     },
+    "u_10m": {
+        "dwd_folder": "u_10m",
+        "dwd_var": "U_10M",
+        "name": "U-Wind 10m",
+        "unit": "m/s",
+        "convert": lambda val: val,
+        "range": [-25.0, 25.0],
+        "is_accum": False,
+    },
+    "v_10m": {
+        "dwd_folder": "v_10m",
+        "dwd_var": "V_10M",
+        "name": "V-Wind 10m",
+        "unit": "m/s",
+        "convert": lambda val: val,
+        "range": [-25.0, 25.0],
+        "is_accum": False,
+    },
+    "wind_10m": {
+        "dwd_folder": "vmax_10m",
+        "dwd_var": "VMAX_10M",
+        "name": "Wind Speed 10m",
+        "unit": "m/s",
+        "convert": lambda val: val,
+        "range": [0.0, 35.0],
+        "is_accum": False,
+    },
 }
 
 RETENTION_RUNS = 2

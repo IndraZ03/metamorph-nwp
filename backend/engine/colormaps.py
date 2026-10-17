@@ -105,6 +105,25 @@ LUT_CLCT = _interpolate_lut([
     (1.00, (255, 255, 255, 220)),  # 100%: overcast
 ])
 
+# 8. Wind Speed: 0 to 35 m/s
+LUT_WIND = _interpolate_lut([
+    (0.00, (230, 245, 255, 120)),
+    (0.10, (170, 220, 250, 180)),
+    (0.20, (100, 200, 210, 220)),
+    (0.35, (80, 210, 120, 240)),
+    (0.50, (250, 225, 60, 250)),
+    (0.65, (250, 140, 40, 255)),
+    (0.80, (230, 40, 40, 255)),
+    (1.00, (160, 20, 150, 255)),
+])
+
+# 9. U/V Wind Component: -25 to +25 m/s
+LUT_UV = _interpolate_lut([
+    (0.00, (30, 60, 180, 255)),
+    (0.50, (245, 245, 245, 255)),
+    (1.00, (180, 30, 30, 255)),
+])
+
 COLORMAPS = {
     "t_2m": LUT_T_2M,
     "relhum_2m": LUT_RELHUM_2M,
@@ -113,6 +132,9 @@ COLORMAPS = {
     "td_2m": LUT_TD_2M,
     "cape_ml": LUT_CAPE_ML,
     "clct": LUT_CLCT,
+    "wind_10m": LUT_WIND,
+    "u_10m": LUT_UV,
+    "v_10m": LUT_UV,
 }
 
 
