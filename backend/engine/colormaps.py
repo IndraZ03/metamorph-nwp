@@ -136,3 +136,42 @@ def apply_colormap(data_array, param_key, vmin, vmax):
         rgba[nan_mask] = 0
 
     return rgba
+
+
+NUMERIC_OFFSET = 1000.0
+NUMERIC_SCALE = 10.0  # 0.1 precision
+
+
+def encode_numeric_rgba(data_array: np.ndarray) -> np.ndarray:
+    """
+    Encode float values into (H, W, 4) uint8 RGBA using Terrain-RGB-like scheme.
+    Formula: val_int = int((val + 1000.0) * 10)
+    R = (val_int >> 16) & 255
+    G = (val_int >> 8) & 255
+    B = val_int & 255
+    A = 255 (or 0 for NaN)
+    """
+    H, W = data_array.shape
+    rgba = np.zeros((H, W, 4), dtype=np.uint8)
+
+    nan_mask = np.isnan(data_array)
+    valid_mask = ~nan_mask
+
+    val_int = np.clip(
+        (data_array[valid_mask] + NUMERIC_OFFSET) * NUMERIC_SCALE, 0, 16777215
+    ).astype(np.uint32)
+
+    rgba[valid_mask, 0] = ((val_int >> 16) & 255).astype(np.uint8)
+    rgba[valid_mask, 1] = ((val_int >> 8) & 255).astype(np.uint8)
+    rgba[valid_mask, 2] = (val_int & 255).astype(np.uint8)
+    rgba[valid_mask, 3] = 255
+
+    return rgba
+
+
+def decode_numeric_rgba(r: int, g: int, b: int, a: int):
+    """Decode RGBA back to original float value."""
+    if a == 0:
+        return None
+    val_int = (r << 16) | (g << 8) | b
+    return round((val_int / NUMERIC_SCALE) - NUMERIC_OFFSET, 2)

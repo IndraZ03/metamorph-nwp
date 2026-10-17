@@ -158,10 +158,91 @@ Metadata lengkap run terbaru untuk konsumsi MapLibre/Leaflet:
 ```
 
 ### `GET /api/icon/tiles/{run}/{param}/{step}/{z}/{x}/{y}.webp`
-Slippy Map tile citra WebP murni.
+Slippy Map tile citra visual WebP.
 - Header: `Content-Type: image/webp`
 - Header: `Cache-Control: public, max-age=604800, immutable`
 - Tile kosong/luar area: Mengembalikan $1\times 1$ WebP transparan (status 200, 30 bytes) untuk mencegah error 404 pada map viewer.
+
+### `GET /api/icon/tiles-numeric/{run}/{param}/{step}/{z}/{x}/{y}.webp`
+Slippy Map tile numerik WebP lossless (Terrain-RGB scheme) untuk inspeksi nilai fisik langsung di sisi client (canvas/pixel inspection):
+- **Encoding**: 24-bit RGB integer dengan presisi 0.1
+- **Formula Encode**: `val_int = int((val + 1000.0) * 10)`
+- **Formula Decode**: `val = ((R * 65536 + G * 256 + B) / 10.0) - 1000.0`
+- Alpha channel = 0 menandakan area nodata / laut tanpa nilai.
+
+### `GET /api/icon/point`
+Endpoint sampling titik untuk pop-up interaktif saat pengguna mengklik peta.
+- **Query Params**:
+  - `lat`: Latitude (misal `-6.2088`)
+  - `lon`: Longitude (misal `106.8456`)
+  - `step`: Timestep prakiraan (misal `000`, `003`)
+  - `run`: Opsional (default run aktif terbaru)
+  - `param`: Opsional (`all` untuk seluruh 7 parameter, atau ID spesifik seperti `t_2m`)
+- **Struktur Response Pop-up**:
+```json
+{
+  "status": "success",
+  "run_id": "2026101706",
+  "run_time": "2026-10-17T06:00:00Z",
+  "valid_time": "2026-10-17T06:00:00Z",
+  "tanggal": "17 Oktober 2026, 13:00 WIB",
+  "koordinat": {
+    "latitude": -1.2654,
+    "longitude": 116.8312
+  },
+  "lokasi": {
+    "kecamatan": "Telaga Sari",
+    "kabupaten_kota": "Balikpapan",
+    "provinsi": "Kalimantan Timur",
+    "negara": "Indonesia",
+    "display_name": "Telaga Sari, Balikpapan Kota, Balikpapan, Kalimantan Timur, Indonesia"
+  },
+  "nilai": {
+    "t_2m": {
+      "name": "Temperature 2m",
+      "value": 30.47,
+      "unit": "°C",
+      "is_accum": false
+    },
+    "relhum_2m": {
+      "name": "Relative Humidity",
+      "value": 70.67,
+      "unit": "%",
+      "is_accum": false
+    },
+    "tot_prec": {
+      "name": "Rain Accumulation",
+      "value": 0.0,
+      "unit": "mm",
+      "is_accum": true
+    },
+    "pmsl": {
+      "name": "Mean Sea Level Pressure",
+      "value": 1009.22,
+      "unit": "hPa",
+      "is_accum": false
+    },
+    "td_2m": {
+      "name": "Dew Point 2m",
+      "value": 24.46,
+      "unit": "°C",
+      "is_accum": false
+    },
+    "cape_ml": {
+      "name": "CAPE (Mixed Layer)",
+      "value": 943.16,
+      "unit": "J/kg",
+      "is_accum": false
+    },
+    "clct": {
+      "name": "Total Cloud Cover",
+      "value": 58.06,
+      "unit": "%",
+      "is_accum": false
+    }
+  }
+}
+```
 
 ---
 
