@@ -10,6 +10,7 @@
     onCloseNwp,
     onChangeRadarFrame,
     onChangeSatelliteBaserun,
+    raised = false,
   } = $props();
 
   function nwpLegend() {
@@ -35,7 +36,7 @@
   ];
 </script>
 
-<div class="fixed bottom-6 left-6 z-40 flex flex-col gap-3 max-w-sm">
+<div class="fixed left-6 z-40 flex flex-col gap-3 max-w-sm {raised ? 'bottom-24' : 'bottom-6'}">
   <!-- Active Layers Panel -->
   {#if radarData || satelliteData || nwpData}
     <div class="p-3.5 rounded-2xl bg-white border border-slate-200 shadow-xl space-y-3">

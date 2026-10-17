@@ -20,10 +20,13 @@
     modelRunTime,
     modelZoom,
     paramsFor,
+    listSteps as listNwpSteps,
+    nearestStep,
     pickStep as pickNwpStep,
     sourceKey as nwpSourceKey,
     tileUrl as nwpTileUrl,
   } from './services/nwp.js';
+  import ForecastTimeline from './components/ForecastTimeline.svelte';
   import { inspectValues, reverseGeocode } from './services/numericTiles.js';
   import { bboxOf, colorFor, countByGeometry, layerDefs } from './services/userLayers.js';
 
@@ -51,6 +54,21 @@
   let nwpHost = null;
   let nwpClickSeq = 0;
   let nwpPop = $state({ loading: false, data: null, error: null });
+  let nwpManifest = null;
+  let nwpSteps = $state([]);
+  let nwpStepToken = $state(null);
+  let nwpPlaying = $state(false);
+  let nwpLoop = $state(false);
+  let nwpWantValid = null;
+  let nwpSlot = 0;
+  let nwpPlayTimer = null;
+  let nwpPlayWait = null;
+  let nwpSeekGen = 0;
+  let nwpPendingGen = 0;
+  let nwpPendingToken = null;
+  const NWP_OPACITY = 0.85;
+  const NWP_PLAY_MS = 700;
+  const NWP_LOAD_MS = 2500;
 
   // User overlays (GeoJSON / GPX)
   let userLayers = $state([]);
@@ -183,6 +201,7 @@
 
     return () => {
       stopNwpPoll();
+      stopNwpPlay();
       closeNwpPopup();
       m.remove();
     };
@@ -328,13 +347,56 @@
     }
   }
 
+  function nwpLayerId(slot) {
+    return slot ? 'nwp-layer-b' : 'nwp-layer';
+  }
+
+  function nwpSourceId(slot) {
+    return slot ? 'nwp-source-b' : 'nwp-source';
+  }
+
+  function nwpBeforeLayer() {
+    if (map.getLayer('radar-layer')) return 'radar-layer';
+    if (map.getLayer('satellite-layer')) return 'satellite-layer';
+    return overlayBeforeLayer();
+  }
+
+  function dropNwpSlot(slot) {
+    const lid = nwpLayerId(slot);
+    const sid = nwpSourceId(slot);
+    if (map.getLayer(lid)) map.removeLayer(lid);
+    if (map.getSource(sid)) map.removeSource(sid);
+  }
+
+  function stopNwpPlay() {
+    nwpPlaying = false;
+    if (nwpPlayTimer) {
+      clearTimeout(nwpPlayTimer);
+      nwpPlayTimer = null;
+    }
+    if (nwpPlayWait) {
+      const done = nwpPlayWait;
+      nwpPlayWait = null;
+      done();
+    }
+  }
+
   function removeNwpLayer() {
     if (!map) return;
+    stopNwpPlay();
     closeNwpPopup();
     nwpInspect = null;
+    nwpManifest = null;
+    nwpSteps = [];
+    nwpStepToken = null;
+    nwpWantValid = null;
+    nwpSlot = 0;
+    nwpSeekGen += 1;
+    nwpPendingGen = 0;
+    nwpPendingToken = null;
     if (map.getCanvas()) map.getCanvas().style.cursor = '';
-    if (map.getLayer('nwp-layer')) map.removeLayer('nwp-layer');
-    if (map.getSource('nwp-source')) map.removeSource('nwp-source');
+    dropNwpSlot(0);
+    dropNwpSlot(1);
     if (map.getLayer('ecmwf-layer')) map.removeLayer('ecmwf-layer');
     if (map.getSource('ecmwf-source')) map.removeSource('ecmwf-source');
     if (nwpAttribControl) {
@@ -347,6 +409,240 @@
     }
     nwpKey = null;
     nwpData = null;
+  }
+
+  function commitNwpStep(modelId, manifest, step) {
+    const spec = MODELS[modelId];
+    const varId = nwpVar || defaultVar(modelId);
+    nwpKey = nwpSourceKey(modelId, manifest, varId, step);
+    nwpInspect = { modelId, manifest, step };
+    nwpStepToken = step.token;
+    nwpWantValid = step.t ?? Date.parse(step.validTime);
+    if (map.getCanvas()) map.getCanvas().style.cursor = 'crosshair';
+    nwpData = {
+      modelId,
+      title: spec.title,
+      badge: spec.badge,
+      varId,
+      runTime: modelRunTime(modelId, manifest),
+      validTime: step.validTime,
+      runId: modelRunId(modelId, manifest),
+      step: step.step,
+    };
+  }
+
+  function addNwpRaster(slot, modelId, manifest, step) {
+    const spec = MODELS[modelId];
+    const varId = nwpVar || defaultVar(modelId);
+    const sid = nwpSourceId(slot);
+    const lid = nwpLayerId(slot);
+    const template = nwpTileUrl(modelId, manifest, varId, step);
+    const bbox = modelBbox(modelId, manifest);
+    const zoom = modelZoom(modelId, manifest);
+    const runTime = modelRunTime(modelId, manifest);
+    const attrib = `${manifest.attribution || spec.attribution} · run ${runTime} · valid ${step.validTime}`;
+    dropNwpSlot(slot);
+    map.addSource(sid, {
+      type: 'raster',
+      scheme: 'xyz',
+      tiles: [template],
+      tileSize: manifest.tile_size || 256,
+      minzoom: zoom.minzoom,
+      maxzoom: zoom.maxzoom,
+      bounds: bbox,
+      attribution: attrib,
+    });
+    map.addLayer(
+      {
+        id: lid,
+        type: 'raster',
+        source: sid,
+        paint: {
+          'raster-opacity': 0,
+          'raster-opacity-transition': { duration: 0, delay: 0 },
+          'raster-fade-duration': 0,
+        },
+      },
+      nwpBeforeLayer()
+    );
+    return { sid, lid, attrib };
+  }
+
+  function waitNwpSource(sid, gen, ms = NWP_LOAD_MS) {
+    return new Promise((resolve) => {
+      if (!map) {
+        resolve(false);
+        return;
+      }
+      let done = false;
+      const finish = (ok) => {
+        if (done) return;
+        done = true;
+        map.off('sourcedata', onData);
+        map.off('idle', onIdle);
+        resolve(ok && gen === nwpSeekGen);
+      };
+      const ready = () => {
+        try {
+          return map.isSourceLoaded(sid) && map.areTilesLoaded();
+        } catch {
+          return false;
+        }
+      };
+      const onData = (e) => {
+        if (e.sourceId === sid && e.isSourceLoaded && map.areTilesLoaded()) finish(true);
+      };
+      const onIdle = () => {
+        if (ready()) finish(true);
+      };
+      map.on('sourcedata', onData);
+      map.on('idle', onIdle);
+      if (ready()) {
+        finish(true);
+        return;
+      }
+      setTimeout(() => finish(ready()), ms);
+    });
+  }
+
+  function abortOwnedSlot(gen, slot) {
+    if (nwpPendingGen === gen) {
+      dropNwpSlot(slot);
+      nwpPendingGen = 0;
+      nwpPendingToken = null;
+    }
+  }
+
+  function sleepPlay(ms) {
+    return new Promise((resolve) => {
+      if (ms <= 0) {
+        resolve();
+        return;
+      }
+      nwpPlayWait = resolve;
+      nwpPlayTimer = setTimeout(() => {
+        nwpPlayTimer = null;
+        nwpPlayWait = null;
+        resolve();
+      }, ms);
+    });
+  }
+
+  function snapNwpOpacity(lid, opacity) {
+    if (!map.getLayer(lid)) return;
+    map.setPaintProperty(lid, 'raster-opacity-transition', { duration: 0, delay: 0 });
+    map.setPaintProperty(lid, 'raster-opacity', opacity);
+  }
+
+  async function prepareNwpStep(modelId, manifest, step) {
+    if (!map || !step) return null;
+    const varId = nwpVar || defaultVar(modelId);
+    const key = nwpSourceKey(modelId, manifest, varId, step);
+    if (key === nwpKey && map.getLayer(nwpLayerId(nwpSlot))) {
+      commitNwpStep(modelId, manifest, step);
+      return null;
+    }
+    if (step.token === nwpPendingToken && nwpPendingGen === nwpSeekGen) return null;
+
+    const gen = ++nwpSeekGen;
+    nwpPendingGen = gen;
+    nwpPendingToken = step.token;
+    const from = nwpSlot;
+    const to = from ^ 1;
+    const added = addNwpRaster(to, modelId, manifest, step);
+    await waitNwpSource(added.sid, gen);
+    if (gen !== nwpSeekGen) {
+      abortOwnedSlot(gen, to);
+      return null;
+    }
+    return { gen, from, to, lid: added.lid, modelId, manifest, step };
+  }
+
+  function revealNwp(prepared) {
+    if (!prepared || !map) return false;
+    const { gen, from, to, lid, modelId, manifest, step } = prepared;
+    if (gen !== nwpSeekGen) {
+      abortOwnedSlot(gen, to);
+      return false;
+    }
+    const fromLid = nwpLayerId(from);
+    snapNwpOpacity(lid, NWP_OPACITY);
+    snapNwpOpacity(fromLid, 0);
+    nwpSlot = to;
+    nwpPendingGen = 0;
+    nwpPendingToken = null;
+    if (!nwpAttribControl) {
+      nwpAttribControl = new maplibregl.AttributionControl({ compact: true });
+      map.addControl(nwpAttribControl, 'bottom-right');
+    }
+    commitNwpStep(modelId, manifest, step);
+    requestAnimationFrame(() => {
+      if (gen !== nwpSeekGen) return;
+      dropNwpSlot(from);
+    });
+    return true;
+  }
+
+  async function showNwpStep(modelId, manifest, step) {
+    const prepared = await prepareNwpStep(modelId, manifest, step);
+    if (!prepared) return;
+    revealNwp(prepared);
+  }
+
+  function seekNwpStep(step) {
+    if (!step || !activeModel || !nwpManifest) return;
+    nwpStepToken = step.token;
+    nwpWantValid = step.t ?? Date.parse(step.validTime);
+    showNwpStep(activeModel, nwpManifest, step).catch((err) => console.warn('NWP seek', err));
+  }
+
+  function stepBy(delta) {
+    if (!nwpSteps.length) return;
+    const i = Math.max(0, nwpSteps.findIndex((s) => s.token === nwpStepToken));
+    let next = nwpSteps[i + delta];
+    if (!next && nwpLoop) {
+      next = delta > 0 ? nwpSteps[0] : nwpSteps[nwpSteps.length - 1];
+    }
+    if (next) seekNwpStep(next);
+    return next;
+  }
+
+  function startNwpPlay() {
+    if (!nwpSteps.length || nwpPlaying) return;
+    nwpPlaying = true;
+    const tick = async () => {
+      while (nwpPlaying) {
+        const i = Math.max(0, nwpSteps.findIndex((s) => s.token === nwpStepToken));
+        let next = nwpSteps[i + 1];
+        if (!next) {
+          if (nwpLoop) next = nwpSteps[0];
+          else {
+            stopNwpPlay();
+            return;
+          }
+        }
+        const t0 = performance.now();
+        let prepared;
+        try {
+          prepared = await prepareNwpStep(activeModel, nwpManifest, next);
+        } catch (err) {
+          console.warn('NWP play', err);
+          stopNwpPlay();
+          return;
+        }
+        if (!nwpPlaying) {
+          if (prepared) abortOwnedSlot(prepared.gen, prepared.to);
+          return;
+        }
+        await sleepPlay(Math.max(0, NWP_PLAY_MS - (performance.now() - t0)));
+        if (!nwpPlaying) {
+          if (prepared) abortOwnedSlot(prepared.gen, prepared.to);
+          return;
+        }
+        if (prepared) revealNwp(prepared);
+      }
+    };
+    tick();
   }
 
   async function applyNwp(modelId) {
@@ -368,7 +664,13 @@
     }
 
     const varId = nwpVar || defaultVar(modelId);
-    const step = pickNwpStep(modelId, manifest, varId);
+    const steps = listNwpSteps(modelId, manifest, varId);
+    nwpManifest = manifest;
+    nwpSteps = steps;
+    const prefer = nwpWantValid;
+    const step = prefer
+      ? nearestStep(steps, prefer)
+      : pickNwpStep(modelId, manifest, varId);
     if (!step) {
       console.warn(`${spec.title} manifest has no ready steps`);
       startNwpPoll(modelId);
@@ -376,69 +678,13 @@
     }
 
     const key = nwpSourceKey(modelId, manifest, varId, step);
-    if (key === nwpKey && map.getSource('nwp-source')) {
-      nwpInspect = { modelId, manifest, step };
-      if (map.getCanvas()) map.getCanvas().style.cursor = 'crosshair';
+    if (key === nwpKey && map.getLayer(nwpLayerId(nwpSlot))) {
+      commitNwpStep(modelId, manifest, step);
       startNwpPoll(modelId);
       return;
     }
 
-    const template = nwpTileUrl(modelId, manifest, varId, step);
-    const bbox = modelBbox(modelId, manifest);
-    const zoom = modelZoom(modelId, manifest);
-    const runTime = modelRunTime(modelId, manifest);
-    const attrib = `${manifest.attribution || spec.attribution} · run ${runTime} · valid ${step.validTime}`;
-
-    removeNwpLayer();
-
-    map.addSource('nwp-source', {
-      type: 'raster',
-      scheme: 'xyz',
-      tiles: [template],
-      tileSize: manifest.tile_size || 256,
-      minzoom: zoom.minzoom,
-      maxzoom: zoom.maxzoom,
-      bounds: bbox,
-      attribution: attrib,
-    });
-
-    let beforeLayer;
-    if (map.getLayer('radar-layer')) {
-      beforeLayer = 'radar-layer';
-    } else if (map.getLayer('satellite-layer')) {
-      beforeLayer = 'satellite-layer';
-    } else {
-      beforeLayer = overlayBeforeLayer();
-    }
-
-    map.addLayer(
-      {
-        id: 'nwp-layer',
-        type: 'raster',
-        source: 'nwp-source',
-        paint: {
-          'raster-opacity': 0.85,
-          'raster-fade-duration': 200,
-        },
-      },
-      beforeLayer
-    );
-
-    nwpAttribControl = new maplibregl.AttributionControl({ compact: true });
-    map.addControl(nwpAttribControl, 'bottom-right');
-    nwpKey = key;
-    nwpInspect = { modelId, manifest, step };
-    if (map.getCanvas()) map.getCanvas().style.cursor = 'crosshair';
-    nwpData = {
-      modelId,
-      title: spec.title,
-      badge: spec.badge,
-      varId,
-      runTime,
-      validTime: step.validTime,
-      runId: modelRunId(modelId, manifest),
-      step: step.step,
-    };
+    await showNwpStep(modelId, manifest, step, { fade: false });
     startNwpPoll(modelId);
   }
 
@@ -605,9 +851,11 @@
   function handleSelectModel(modelId) {
     const next = activeModel === modelId ? null : modelId;
     activeModel = next;
+    stopNwpPlay();
     if (GLOBAL_MODELS.includes(modelId)) {
       if (next) {
         nwpVar = defaultVar(next);
+        nwpWantValid = null;
         applyNwp(next).catch((err) => console.warn('NWP toggle', err));
       } else {
         applyNwp(null);
@@ -734,7 +982,10 @@
   }
 </script>
 
-<main class="relative w-screen h-screen overflow-hidden bg-slate-100">
+<main
+    class="relative w-screen h-screen overflow-hidden bg-slate-100"
+    class:nwp-timeline-on={GLOBAL_MODELS.includes(activeModel) && nwpSteps.length > 0}
+  >
   <!-- MapLibre Container -->
   <div bind:this={mapContainer} class="absolute inset-0 w-full h-full z-0"></div>
 
@@ -789,11 +1040,30 @@
     {radarData}
     {satelliteData}
     {nwpData}
+    raised={GLOBAL_MODELS.includes(activeModel) && nwpSteps.length > 0}
     onCloseRadar={() => applyRadar(null)}
     onCloseSatellite={() => applySatellite(null)}
     onCloseNwp={closeNwp}
     onChangeSatelliteBaserun={changeSatelliteBaserun}
   />
+
+  {#if GLOBAL_MODELS.includes(activeModel)}
+    <ForecastTimeline
+      steps={nwpSteps}
+      selectedToken={nwpStepToken}
+      playing={nwpPlaying}
+      loop={nwpLoop}
+      disabled={!nwpSteps.length}
+      modelTitle={nwpData?.title || MODELS[activeModel]?.title || ''}
+      runTime={nwpData?.runTime || (nwpManifest ? modelRunTime(activeModel, nwpManifest) : null)}
+      onSeek={seekNwpStep}
+      onPlay={startNwpPlay}
+      onPause={stopNwpPlay}
+      onPrev={() => stepBy(-1)}
+      onNext={() => stepBy(1)}
+      onLoop={(on) => (nwpLoop = on)}
+    />
+  {/if}
 
   <!-- Radar Modal -->
   {#if showRadarModal}

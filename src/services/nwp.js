@@ -328,12 +328,12 @@ export async function fetchLatest(modelId) {
   throw new Error(`unknown model ${modelId}`);
 }
 
-function nearestByValid(rows, now = Date.now()) {
-  if (!rows.length) return null;
+export function nearestStep(rows, now = Date.now()) {
+  if (!rows?.length) return null;
   let best = rows[0];
   let bestAbs = Infinity;
   for (const row of rows) {
-    const t = Date.parse(row.validTime);
+    const t = row.t ?? Date.parse(row.validTime);
     if (Number.isNaN(t)) continue;
     const abs = Math.abs(t - now);
     if (abs < bestAbs) {
@@ -344,28 +344,35 @@ function nearestByValid(rows, now = Date.now()) {
   return best;
 }
 
-export function pickStep(modelId, manifest, varId, now = Date.now()) {
+function withTime(row) {
+  const t = Date.parse(row.validTime);
+  return Number.isNaN(t) ? null : { ...row, t };
+}
+
+export function listSteps(modelId, manifest, varId) {
+  let rows = [];
   if (modelId === 'ecmwf') {
-    const step = pickEcmwfStep(manifest, now);
-    if (!step) return null;
-    return {
-      step: step.step,
-      validTime: step.valid_time,
-      token: String(step.step),
-    };
-  }
-  if (modelId === 'gfs') {
-    const rows = (manifest?.timesteps || [])
+    rows = (manifest?.steps || [])
+      .filter((s) => s.ready && s.valid_time)
+      .map((s) =>
+        withTime({
+          step: s.step,
+          validTime: s.valid_time,
+          token: String(s.step),
+        })
+      );
+  } else if (modelId === 'gfs') {
+    rows = (manifest?.timesteps || [])
       .filter((s) => !s.error && s.valid)
-      .map((s) => ({
-        step: s.forecast_hour,
-        validTime: s.valid,
-        token: isoToDir(s.valid),
-      }));
-    return nearestByValid(rows, now);
-  }
-  if (modelId === 'icon') {
-    const rows = (manifest?.timesteps || [])
+      .map((s) =>
+        withTime({
+          step: s.forecast_hour,
+          validTime: s.valid,
+          token: isoToDir(s.valid),
+        })
+      );
+  } else if (modelId === 'icon') {
+    rows = (manifest?.timesteps || [])
       .filter((s) => {
         if (!s.valid_time) return false;
         if (varId && Array.isArray(s.params) && s.params.length) {
@@ -373,14 +380,19 @@ export function pickStep(modelId, manifest, varId, now = Date.now()) {
         }
         return true;
       })
-      .map((s) => ({
-        step: s.step,
-        validTime: s.valid_time,
-        token: s.step_str || String(s.step).padStart(3, '0'),
-      }));
-    return nearestByValid(rows, now);
+      .map((s) =>
+        withTime({
+          step: s.step,
+          validTime: s.valid_time,
+          token: s.step_str || String(s.step).padStart(3, '0'),
+        })
+      );
   }
-  return null;
+  return rows.filter(Boolean).sort((a, b) => a.t - b.t);
+}
+
+export function pickStep(modelId, manifest, varId, now = Date.now()) {
+  return nearestStep(listSteps(modelId, manifest, varId), now);
 }
 
 export function tileUrl(modelId, manifest, varId, step) {
