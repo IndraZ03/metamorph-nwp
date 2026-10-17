@@ -14,10 +14,11 @@ from .config import (
     GRID_RES_DEG,
     PARAMETERS,
     TILES_DIR,
+    NUMERIC_TILES_DIR,
     ZOOM_MIN,
     ZOOM_MAX,
 )
-from .colormaps import apply_colormap
+from .colormaps import apply_colormap, encode_numeric_rgba
 
 
 def lonlat_to_tile(lon: float, lat: float, z: int) -> Tuple[int, int]:
@@ -79,6 +80,7 @@ class TileGenerator:
         vmin, vmax = param_cfg["range"]
 
         base_dir = TILES_DIR / run_id / param_key / step_str
+        num_base_dir = NUMERIC_TILES_DIR / run_id / param_key / step_str
 
         def _render_and_save(tile_coords, tile_lats, tile_lons, z, x, y):
             col_indices = (tile_lons - BBOX_LON_MIN) / GRID_RES_DEG
@@ -96,12 +98,23 @@ class TileGenerator:
             if rgba[:, :, 3].max() == 0:
                 return 0
 
+            # 1. Save visual WebP tile
             tile_dir = base_dir / str(z) / str(x)
             tile_dir.mkdir(parents=True, exist_ok=True)
             tile_path = tile_dir / f"{y}.webp"
 
             img = Image.fromarray(rgba, "RGBA")
             img.save(tile_path, format="WEBP", quality=85, method=4)
+
+            # 2. Save numeric WebP tile (lossless)
+            rgba_num = encode_numeric_rgba(sampled)
+            num_dir = num_base_dir / str(z) / str(x)
+            num_dir.mkdir(parents=True, exist_ok=True)
+            num_path = num_dir / f"{y}.webp"
+
+            img_num = Image.fromarray(rgba_num, "RGBA")
+            img_num.save(num_path, format="WEBP", lossless=True)
+
             return 1
 
         tasks = []

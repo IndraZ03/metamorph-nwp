@@ -9,6 +9,7 @@ from .downloader import (
 )
 from .manifest import ManifestManager, prune_old_runs
 from .processor import process_grib_to_grid
+from .sampler import save_grid_to_disk
 from .tiler import TileGenerator
 
 _tiler_instance = None
@@ -34,6 +35,9 @@ def process_step_parameter(
 
     raw_grib, step_info = res
     grid_2d, _ = process_grib_to_grid(raw_grib, param_key)
+
+    # Save 2D grid for sub-millisecond point queries
+    save_grid_to_disk(grid_2d, run_meta["run_id"], param_key, step_info["step_str"])
 
     tiler = get_tiler()
     tiler.generate_tiles_for_step(

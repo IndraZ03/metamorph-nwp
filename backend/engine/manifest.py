@@ -68,6 +68,16 @@ class ManifestManager:
             "run_time": self.run_time,
             "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:00Z"),
             "tile_url_template": "/api/icon/tiles/{run}/{param}/{step}/{z}/{x}/{y}.webp",
+            "numeric_tile_url_template": "/api/icon/tiles-numeric/{run}/{param}/{step}/{z}/{x}/{y}.webp",
+            "point_query_url_template": "/api/icon/point?lat={lat}&lon={lon}&step={step}&run={run}&param={param}",
+            "numeric_encoding": {
+                "type": "rgb_int24",
+                "offset": 1000.0,
+                "scale": 10.0,
+                "precision": 0.1,
+                "decode_formula": "((R * 65536 + G * 256 + B) / 10.0) - 1000.0",
+                "nodata_alpha": 0,
+            },
             "parameters": params_list,
             "timesteps": [],
         }

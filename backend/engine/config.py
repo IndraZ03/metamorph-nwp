@@ -5,8 +5,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = BASE_DIR / "data"
 CACHE_DIR = DATA_DIR / "cache"
 TILES_DIR = DATA_DIR / "tiles" / "icon"
+NUMERIC_TILES_DIR = DATA_DIR / "tiles_numeric" / "icon"
+GRIDS_DIR = DATA_DIR / "grids" / "icon"
 
-for d in (CACHE_DIR, TILES_DIR):
+for d in (CACHE_DIR, TILES_DIR, NUMERIC_TILES_DIR, GRIDS_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 # Indonesia Bounding Box with buffer
