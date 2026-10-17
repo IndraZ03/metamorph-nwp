@@ -7,3 +7,5 @@ engine/.venv/
 engine/**/__pycache__/
 *.grib2
 *.grib2.idx
+
+# GFS engine: output tiles under data/gfs/ (ignored via data/ above)
