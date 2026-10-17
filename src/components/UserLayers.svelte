@@ -92,7 +92,7 @@
     <button
       type="button"
       onclick={() => (showPanel = true)}
-      class="w-12 h-12 rounded-full flex items-center justify-center transition-all duration-200 border shadow-md bg-white hover:bg-slate-50 text-slate-700 hover:text-slate-900 border-slate-200 hover:border-slate-300 hover:scale-105"
+      class="w-12 h-12 rounded-full flex items-center justify-center transition-all duration-200 border shadow-lg shadow-black/20 backdrop-blur-md bg-white/10 hover:bg-white/20 text-white border-white/20 hover:border-white/35 hover:scale-105 active:scale-95 cursor-pointer"
       aria-label="Overlay Saya (GeoJSON & GPX)"
     >
       <!-- layers + plus icon -->
@@ -103,13 +103,13 @@
         <path d="M18 6v6" />
       </svg>
       {#if layers.length > 0}
-        <span class="absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-sky-600 text-white text-[10px] font-bold flex items-center justify-center ring-2 ring-white">
+        <span class="absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-[#2563EB] text-white text-[10px] font-bold flex items-center justify-center ring-2 ring-white/40 shadow-sm shadow-blue-500/50">
           {layers.length}
         </span>
       {/if}
     </button>
     <div
-      class="absolute right-full top-1/2 -translate-y-1/2 mr-3 px-2.5 py-1 rounded-lg bg-slate-900 text-xs font-medium text-white whitespace-nowrap shadow-xl opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity duration-150"
+      class="absolute right-full top-1/2 -translate-y-1/2 mr-3 px-3 py-1.5 rounded-xl bg-slate-900/90 backdrop-blur-md text-xs font-medium text-white whitespace-nowrap shadow-2xl border border-white/10 opacity-0 pointer-events-none group-hover:opacity-100 transition-all duration-150"
     >
       Overlay Saya (GeoJSON & GPX)
     </div>

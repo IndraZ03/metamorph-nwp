@@ -18,6 +18,8 @@ _ALIASES = {
     "tp": ("tp",),
     "mucape": ("mucape", "cape"),
     "tcc": ("tcc",),
+    "10u": ("10u", "u10"),
+    "10v": ("10v", "v10"),
 }
 
 
@@ -135,6 +137,21 @@ def decode_step(grib_path: Path) -> dict[str, dict]:
         if np.nanmax(tcc) > 1.5:
             tcc = tcc / 100.0
         out["tcc"] = {"lats": lats, "lons": lons, "values": tcc}
+
+    u10_val = v10_val = None
+    da = _pick(by_name, "10u")
+    if da is not None:
+        lats, lons, u10_val = _to_latlon_array(da)
+        out["u10"] = {"lats": lats, "lons": lons, "values": u10_val}
+
+    da = _pick(by_name, "10v")
+    if da is not None:
+        lats, lons, v10_val = _to_latlon_array(da)
+        out["v10"] = {"lats": lats, "lons": lons, "values": v10_val}
+
+    if u10_val is not None and v10_val is not None:
+        wind_spd = np.sqrt(u10_val**2 + v10_val**2)
+        out["wind10m"] = {"lats": lats, "lons": lons, "values": wind_spd}
 
     log.info("decoded vars: %s", ", ".join(sorted(out)))
     return out

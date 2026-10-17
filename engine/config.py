@@ -27,8 +27,8 @@ ATTRIBUTION = "© ECMWF IFS 0.25° (CC-BY-4.0)"
 TILE_URL_TEMPLATE = "/ecmwf/runs/{run_id}/{var}/{step}/{z}/{x}/{y}.webp"
 NUMERIC_TILE_URL_TEMPLATE = "/ecmwf/numeric/{run_id}/{var}/{step}/{z}/{x}/{y}.webp"
 
-# GRIB shortNames actually retrieved (RH is derived from 2t+2d)
-FETCH_PARAMS = ["2t", "2d", "msl", "tp", "mucape", "tcc"]
+# GRIB shortNames actually retrieved (RH is derived from 2t+2d, wind10m from 10u+10v)
+FETCH_PARAMS = ["2t", "2d", "msl", "tp", "mucape", "tcc", "10u", "10v"]
 
 # App ids ↔ GRIB. Colormaps key off `id`.
 VARIABLES = [
@@ -39,6 +39,9 @@ VARIABLES = [
     {"id": "d2m", "param": "2d", "units": "C", "label": "Dew Point"},
     {"id": "cape", "param": "mucape", "units": "J/kg", "label": "CAPE"},
     {"id": "tcc", "param": "tcc", "units": "frac", "label": "Clouds"},
+    {"id": "wind10m", "param": "derived", "units": "m/s", "label": "Wind Speed 10m"},
+    {"id": "u10", "param": "10u", "units": "m/s", "label": "10m U-Wind"},
+    {"id": "v10", "param": "10v", "units": "m/s", "label": "10m V-Wind"},
 ]
 
 DEFAULT_VARIABLE = "t2m"

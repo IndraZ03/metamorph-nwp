@@ -38,12 +38,12 @@
       <button
         type="button"
         onclick={() => handleClick(btn)}
-        class="w-12 h-12 rounded-full flex items-center justify-center border {
+        class="w-12 h-12 rounded-full flex items-center justify-center border transition-all duration-200 backdrop-blur-md cursor-pointer {
           isActive
-            ? 'bg-sky-600 text-white border-sky-600'
+            ? 'bg-[#2563EB] text-white border-[#2563EB] shadow-lg shadow-blue-500/40 ring-2 ring-blue-400/50 scale-105'
             : btn.enabled
-              ? 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-              : 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+              ? 'bg-white/10 hover:bg-white/20 text-white border-white/20 shadow-lg shadow-black/20 hover:border-white/35 hover:scale-105 active:scale-95'
+              : 'bg-white/5 text-white/30 border-white/10 cursor-not-allowed'
         }"
         aria-label={btn.label}
       >
@@ -79,11 +79,11 @@
 
       <!-- Tooltip on Left -->
       <div
-        class="absolute right-full top-1/2 -translate-y-1/2 mr-3 px-2.5 py-1 rounded-lg bg-slate-900 text-xs font-medium text-white whitespace-nowrap shadow-xl opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity duration-150 flex items-center gap-1.5"
+        class="absolute right-full top-1/2 -translate-y-1/2 mr-3 px-3 py-1.5 rounded-xl bg-slate-900/90 backdrop-blur-md text-xs font-medium text-white whitespace-nowrap shadow-2xl border border-white/10 opacity-0 pointer-events-none group-hover:opacity-100 transition-all duration-150 flex items-center gap-1.5 z-50"
       >
         <span>{btn.label}</span>
         {#if !btn.enabled}
-          <span class="text-[9px] px-1 py-0.2 rounded bg-slate-800 text-slate-300 font-normal">segera</span>
+          <span class="text-[9px] px-1.5 py-0.2 rounded bg-white/10 text-slate-400 font-normal">segera</span>
         {/if}
       </div>
     </div>
