@@ -12,8 +12,8 @@
     { id: 'radar', label: 'Radar', icon: 'radar', active: () => radarActive, enabled: true },
     { id: 'satelit', label: 'Satelit', icon: 'satellite', active: () => satelliteActive, enabled: true },
     { id: 'ecmwf', label: 'ECMWF', icon: 'ecmwf', active: () => activeModel === 'ecmwf', enabled: true },
-    { id: 'arome', label: 'AROME', icon: 'arome', active: () => activeModel === 'arome', enabled: false },
-    { id: 'accessr', label: 'ACCESS-R', icon: 'accessr', active: () => activeModel === 'accessr', enabled: false },
+    { id: 'gfs', label: 'GFS', icon: 'gfs', active: () => activeModel === 'gfs', enabled: true },
+    { id: 'icon', label: 'ICON', icon: 'icon', active: () => activeModel === 'icon', enabled: true },
     { id: 'cawo', label: 'CAWO', icon: 'cawo', active: () => activeModel === 'cawo', enabled: false },
     { id: 'wrf', label: 'WRF', icon: 'wrf', active: () => activeModel === 'wrf', enabled: false },
     { id: 'wrf-chem', label: 'WRF-Chem', icon: 'chem', active: () => activeModel === 'wrf-chem', enabled: false },
@@ -65,10 +65,10 @@
           </svg>
         {:else if btn.icon === 'ecmwf'}
           <span class="font-bold text-[10px] tracking-tighter">EC</span>
-        {:else if btn.icon === 'arome'}
-          <span class="font-bold text-[10px] tracking-tighter">ARO</span>
-        {:else if btn.icon === 'accessr'}
-          <span class="font-bold text-[10px] tracking-tighter">ACC</span>
+        {:else if btn.icon === 'gfs'}
+          <span class="font-bold text-[10px] tracking-tighter">GFS</span>
+        {:else if btn.icon === 'icon'}
+          <span class="font-bold text-[10px] tracking-tighter">ICO</span>
         {:else if btn.icon === 'cawo'}
           <span class="font-bold text-[10px] tracking-tighter">CAW</span>
         {:else if btn.icon === 'wrf'}

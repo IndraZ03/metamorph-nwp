@@ -6,41 +6,148 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const ECMWF_OUT = path.resolve(ROOT, 'engine/output');
+const GFS_DATA = path.resolve(ROOT, 'data/gfs');
+const GFS_TILES = path.resolve(GFS_DATA, 'tiles/gfs');
+const ICON_TILES = path.resolve(ROOT, 'data/tiles/icon');
 
-function ecmwfStatic() {
-  return (req, res, next) => {
-    if (!req.url || !req.url.startsWith('/ecmwf/')) {
-      return next();
-    }
-    const rel = decodeURIComponent(req.url.split('?')[0].slice('/ecmwf/'.length));
-    const target = path.resolve(ECMWF_OUT, rel);
-    const relToOut = path.relative(ECMWF_OUT, target);
-    if (relToOut.startsWith('..') || path.isAbsolute(relToOut)) {
-      res.statusCode = 403;
-      res.end('Forbidden');
-      return;
-    }
-    fs.stat(target, (err, st) => {
-      if (err || !st.isFile()) {
-        res.statusCode = 404;
-        res.end('Not found');
+const TYPES = {
+  '.webp': 'image/webp',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+};
+
+const TRANSPARENT_WEBP = Buffer.from(
+  '524946461a000000574542505650384c0e0000002f670000000488880800',
+  'hex'
+);
+
+function sendJson(res, obj, status = 200) {
+  const body = JSON.stringify(obj);
+  res.statusCode = status;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.end(body);
+}
+
+function sendFile(res, target, { missingWebp = false } = {}) {
+  fs.stat(target, (err, st) => {
+    if (err || !st.isFile()) {
+      if (missingWebp) {
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'image/webp');
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.end(TRANSPARENT_WEBP);
         return;
       }
-      const ext = path.extname(target).toLowerCase();
-      const types = {
-        '.webp': 'image/webp',
-        '.json': 'application/json; charset=utf-8',
-        '.png': 'image/png',
-      };
-      res.statusCode = 200;
-      res.setHeader('Content-Type', types[ext] || 'application/octet-stream');
-      res.setHeader(
-        'Cache-Control',
-        ext === '.json' ? 'no-cache' : 'public, max-age=86400'
-      );
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      fs.createReadStream(target).pipe(res);
-    });
+      res.statusCode = 404;
+      res.end('Not found');
+      return;
+    }
+    const ext = path.extname(target).toLowerCase();
+    res.statusCode = 200;
+    res.setHeader('Content-Type', TYPES[ext] || 'application/octet-stream');
+    res.setHeader('Cache-Control', ext === '.json' ? 'no-cache' : 'public, max-age=86400');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    fs.createReadStream(target).pipe(res);
+  });
+}
+
+function guarded(root, rel) {
+  const target = path.resolve(root, rel);
+  const relToOut = path.relative(root, target);
+  if (relToOut.startsWith('..') || path.isAbsolute(relToOut)) return null;
+  return target;
+}
+
+function nwpStatic() {
+  return (req, res, next) => {
+    if (!req.url) return next();
+    const url = decodeURIComponent(req.url.split('?')[0]);
+
+    if (url.startsWith('/ecmwf/')) {
+      const target = guarded(ECMWF_OUT, url.slice('/ecmwf/'.length));
+      if (!target) {
+        res.statusCode = 403;
+        res.end('Forbidden');
+        return;
+      }
+      sendFile(res, target);
+      return;
+    }
+
+    if (url === '/api/gfs/latest') {
+      sendFile(res, path.join(GFS_DATA, 'latest.json'));
+      return;
+    }
+    if (url === '/api/gfs/runs') {
+      fs.readdir(GFS_TILES, { withFileTypes: true }, (err, entries) => {
+        const runs = (err ? [] : entries)
+          .filter((e) => e.isDirectory())
+          .map((e) => e.name)
+          .sort()
+          .reverse();
+        sendJson(res, { runs });
+      });
+      return;
+    }
+    if (url.startsWith('/api/gfs/runs/') && url.endsWith('/manifest.json')) {
+      const run = url.slice('/api/gfs/runs/'.length, -'/manifest.json'.length);
+      const target = guarded(GFS_TILES, path.join(run, 'manifest.json'));
+      if (!target) {
+        res.statusCode = 403;
+        res.end('Forbidden');
+        return;
+      }
+      sendFile(res, target);
+      return;
+    }
+    if (url.startsWith('/tiles/gfs/') && url.endsWith('.webp')) {
+      const target = guarded(GFS_TILES, url.slice('/tiles/gfs/'.length));
+      if (!target) {
+        res.statusCode = 403;
+        res.end('Forbidden');
+        return;
+      }
+      sendFile(res, target, { missingWebp: true });
+      return;
+    }
+
+    if (url === '/api/icon/manifest') {
+      const latest = path.join(ICON_TILES, 'latest_manifest.json');
+      fs.stat(latest, (err) => {
+        if (!err) {
+          sendFile(res, latest);
+          return;
+        }
+        fs.readdir(ICON_TILES, { withFileTypes: true }, (dirErr, entries) => {
+          const runs = (dirErr ? [] : entries)
+            .filter((e) => e.isDirectory() && /^\d{10}$/.test(e.name))
+            .map((e) => e.name)
+            .sort()
+            .reverse();
+          if (!runs.length) {
+            sendJson(res, { error: 'No ICON runs processed yet.' }, 404);
+            return;
+          }
+          sendFile(res, path.join(ICON_TILES, runs[0], 'manifest.json'));
+        });
+      });
+      return;
+    }
+    if (url.startsWith('/api/icon/tiles/') && url.endsWith('.webp')) {
+      const target = guarded(ICON_TILES, url.slice('/api/icon/tiles/'.length));
+      if (!target) {
+        res.statusCode = 403;
+        res.end('Forbidden');
+        return;
+      }
+      sendFile(res, target, { missingWebp: true });
+      return;
+    }
+
+    return next();
   };
 }
 
@@ -48,12 +155,12 @@ export default defineConfig({
   plugins: [
     svelte(),
     {
-      name: 'ecmwf-tiles',
+      name: 'nwp-tiles',
       configureServer(server) {
-        server.middlewares.use(ecmwfStatic());
+        server.middlewares.use(nwpStatic());
       },
       configurePreviewServer(server) {
-        server.middlewares.use(ecmwfStatic());
+        server.middlewares.use(nwpStatic());
       },
     },
     {

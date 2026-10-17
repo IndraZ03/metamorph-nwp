@@ -1,6 +1,5 @@
 import argparse
 import sys
-import uvicorn
 from pathlib import Path
 
 # Ensure backend package in sys.path
@@ -62,6 +61,8 @@ def main():
     args = parser.parse_args()
 
     if args.serve:
+        import uvicorn
+
         print(f"Starting Metamorph NWP ICON Tile API on port {args.port}...")
         uvicorn.run("backend.app:app", host="0.0.0.0", port=args.port, reload=False)
         return

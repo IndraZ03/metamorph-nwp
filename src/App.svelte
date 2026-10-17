@@ -8,14 +8,20 @@
   import LayerControl from './components/LayerControl.svelte';
   import { proxyCuaca, proxySatelliteTile } from './services/bmkg.js';
   import {
-    ECMWF_DEFAULT_VAR,
     ECMWF_POLL_MS,
     GLOBAL_MODELS,
-    fetchLatest as fetchEcmwfLatest,
-    pickStep as pickEcmwfStep,
-    sourceKey as ecmwfSourceKey,
-    tileUrl as ecmwfTileUrl,
-  } from './services/ecmwf.js';
+    MODELS,
+    defaultVar,
+    fetchLatest as fetchNwpLatest,
+    modelBbox,
+    modelRunId,
+    modelRunTime,
+    modelZoom,
+    paramsFor,
+    pickStep as pickNwpStep,
+    sourceKey as nwpSourceKey,
+    tileUrl as nwpTileUrl,
+  } from './services/nwp.js';
 
   // State management using Svelte 5 runes
   let mapContainer = $state(null);
@@ -30,11 +36,11 @@
   let radarData = $state(null);
   let satelliteData = $state(null);
   let activeModel = $state(null);
-  let ecmwfVar = $state(ECMWF_DEFAULT_VAR);
-  let ecmwfData = $state(null);
-  let ecmwfKey = $state(null);
-  let ecmwfPollId = null;
-  let ecmwfAttribControl = null;
+  let nwpVar = $state(defaultVar('ecmwf'));
+  let nwpData = $state(null);
+  let nwpKey = $state(null);
+  let nwpPollId = null;
+  let nwpAttribControl = null;
 
   function setupCartoBoundaries(m) {
     if (!m) return;
@@ -157,7 +163,7 @@
     });
 
     return () => {
-      stopEcmwfPoll();
+      stopNwpPoll();
       m.remove();
     };
   });
@@ -172,80 +178,85 @@
     return undefined;
   }
 
-  function stopEcmwfPoll() {
-    if (ecmwfPollId) {
-      clearInterval(ecmwfPollId);
-      ecmwfPollId = null;
+  function stopNwpPoll() {
+    if (nwpPollId) {
+      clearInterval(nwpPollId);
+      nwpPollId = null;
     }
   }
 
-  function startEcmwfPoll() {
-    stopEcmwfPoll();
-    ecmwfPollId = setInterval(() => {
-      applyEcmwf(true).catch((err) => console.warn('ECMWF poll', err));
+  function startNwpPoll(modelId) {
+    stopNwpPoll();
+    nwpPollId = setInterval(() => {
+      applyNwp(modelId).catch((err) => console.warn('NWP poll', err));
     }, ECMWF_POLL_MS);
   }
 
-  function removeEcmwfLayer() {
+  function removeNwpLayer() {
     if (!map) return;
+    if (map.getLayer('nwp-layer')) map.removeLayer('nwp-layer');
+    if (map.getSource('nwp-source')) map.removeSource('nwp-source');
     if (map.getLayer('ecmwf-layer')) map.removeLayer('ecmwf-layer');
     if (map.getSource('ecmwf-source')) map.removeSource('ecmwf-source');
-    if (ecmwfAttribControl) {
+    if (nwpAttribControl) {
       try {
-        map.removeControl(ecmwfAttribControl);
+        map.removeControl(nwpAttribControl);
       } catch {
         /* already gone */
       }
-      ecmwfAttribControl = null;
+      nwpAttribControl = null;
     }
-    ecmwfKey = null;
-    ecmwfData = null;
+    nwpKey = null;
+    nwpData = null;
   }
 
-  async function applyEcmwf(on) {
+  async function applyNwp(modelId) {
     if (!map || !mapLoaded) return;
-    if (!on) {
-      stopEcmwfPoll();
-      removeEcmwfLayer();
+    if (!modelId || !GLOBAL_MODELS.includes(modelId)) {
+      stopNwpPoll();
+      removeNwpLayer();
       return;
     }
 
+    const spec = MODELS[modelId];
     let manifest;
     try {
-      manifest = await fetchEcmwfLatest();
+      manifest = await fetchNwpLatest(modelId);
     } catch (err) {
-      console.warn('ECMWF latest.json not ready', err);
-      startEcmwfPoll();
+      console.warn(`${spec.title} latest not ready`, err);
+      startNwpPoll(modelId);
       return;
     }
 
-    const step = pickEcmwfStep(manifest);
+    const varId = nwpVar || defaultVar(modelId);
+    const step = pickNwpStep(modelId, manifest, varId);
     if (!step) {
-      console.warn('ECMWF manifest has no ready steps');
-      startEcmwfPoll();
+      console.warn(`${spec.title} manifest has no ready steps`);
+      startNwpPoll(modelId);
       return;
     }
 
-    const varId = ecmwfVar || ECMWF_DEFAULT_VAR;
-    const key = ecmwfSourceKey(manifest, varId, step.step);
-    if (key === ecmwfKey && map.getSource('ecmwf-source')) {
-      startEcmwfPoll();
+    const key = nwpSourceKey(modelId, manifest, varId, step);
+    if (key === nwpKey && map.getSource('nwp-source')) {
+      startNwpPoll(modelId);
       return;
     }
 
-    const template = ecmwfTileUrl(manifest, varId, step.step);
-    const bbox = manifest.bbox || [94.0, -11.5, 141.5, 6.5];
-    const attrib = `${manifest.attribution || '© ECMWF IFS 0.25° (CC-BY-4.0)'} · run ${manifest.run_time} · valid ${step.valid_time}`;
+    const template = nwpTileUrl(modelId, manifest, varId, step);
+    const bbox = modelBbox(modelId, manifest);
+    const zoom = modelZoom(modelId, manifest);
+    const runTime = modelRunTime(modelId, manifest);
+    const attrib = `${manifest.attribution || spec.attribution} · run ${runTime} · valid ${step.validTime}`;
 
-    removeEcmwfLayer();
+    removeNwpLayer();
 
-    map.addSource('ecmwf-source', {
+    map.addSource('nwp-source', {
       type: 'raster',
       scheme: 'xyz',
       tiles: [template],
       tileSize: manifest.tile_size || 256,
-      minzoom: manifest.minzoom ?? 3,
-      maxzoom: manifest.maxzoom ?? 6,
+      minzoom: zoom.minzoom,
+      maxzoom: zoom.maxzoom,
       bounds: bbox,
       attribution: attrib,
     });
@@ -261,9 +272,9 @@
 
     map.addLayer(
       {
-        id: 'ecmwf-layer',
+        id: 'nwp-layer',
         type: 'raster',
-        source: 'ecmwf-source',
+        source: 'nwp-source',
         paint: {
           'raster-opacity': 0.85,
           'raster-fade-duration': 200,
@@ -272,17 +283,20 @@
       beforeLayer
     );
 
-    ecmwfAttribControl = new maplibregl.AttributionControl({ compact: true });
-    map.addControl(ecmwfAttribControl, 'bottom-right');
-    ecmwfKey = key;
-    ecmwfData = {
+    nwpAttribControl = new maplibregl.AttributionControl({ compact: true });
+    map.addControl(nwpAttribControl, 'bottom-right');
+    nwpKey = key;
+    nwpData = {
+      modelId,
+      title: spec.title,
+      badge: spec.badge,
       varId,
-      runTime: manifest.run_time,
-      validTime: step.valid_time,
-      runId: manifest.run_id,
+      runTime,
+      validTime: step.validTime,
+      runId: modelRunId(modelId, manifest),
       step: step.step,
     };
-    startEcmwfPoll();
+    startNwpPoll(modelId);
   }
 
   // Manage Radar Layer on Map
@@ -448,27 +462,29 @@
   function handleSelectModel(modelId) {
     const next = activeModel === modelId ? null : modelId;
     activeModel = next;
-    if (modelId === 'ecmwf') {
-      if (next === 'ecmwf') {
-        ecmwfVar = ECMWF_DEFAULT_VAR;
-        applyEcmwf(true).catch((err) => console.warn('ECMWF toggle', err));
+    if (GLOBAL_MODELS.includes(modelId)) {
+      if (next) {
+        nwpVar = defaultVar(next);
+        applyNwp(next).catch((err) => console.warn('NWP toggle', err));
       } else {
-        applyEcmwf(false);
+        applyNwp(null);
       }
-    } else if (ecmwfKey) {
-      applyEcmwf(false);
+    } else if (nwpKey) {
+      applyNwp(null);
     }
   }
 
-  function handleSelectEcmwfVar(varId) {
-    if (ecmwfVar === varId) return;
-    ecmwfVar = varId;
-    applyEcmwf(true).catch((err) => console.warn('ECMWF var', err));
+  function handleSelectNwpVar(varId) {
+    if (nwpVar === varId) return;
+    nwpVar = varId;
+    if (GLOBAL_MODELS.includes(activeModel)) {
+      applyNwp(activeModel).catch((err) => console.warn('NWP var', err));
+    }
   }
 
-  function closeEcmwf() {
+  function closeNwp() {
     activeModel = null;
-    applyEcmwf(false);
+    applyNwp(null);
   }
 </script>
 
@@ -509,17 +525,21 @@
   />
 
   {#if GLOBAL_MODELS.includes(activeModel)}
-    <ParamToolbar activeVar={ecmwfVar} onSelectVar={handleSelectEcmwfVar} />
+    <ParamToolbar
+      params={paramsFor(activeModel)}
+      activeVar={nwpVar}
+      onSelectVar={handleSelectNwpVar}
+    />
   {/if}
 
   <!-- Active Layer Legend & Timeline Controls (Bottom Left) -->
   <LayerControl
     {radarData}
     {satelliteData}
-    {ecmwfData}
+    {nwpData}
     onCloseRadar={() => applyRadar(null)}
     onCloseSatellite={() => applySatellite(null)}
-    onCloseEcmwf={closeEcmwf}
+    onCloseNwp={closeNwp}
     onChangeSatelliteBaserun={changeSatelliteBaserun}
   />
 

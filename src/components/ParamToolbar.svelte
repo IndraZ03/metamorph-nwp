@@ -1,11 +1,11 @@
 <script>
   import { ECMWF_PARAMS } from '../services/ecmwf.js';
 
-  let { activeVar = 't2m', onSelectVar } = $props();
+  let { params = ECMWF_PARAMS, activeVar = 't2m', onSelectVar } = $props();
 </script>
 
 <div class="fixed left-5 top-1/2 -translate-y-1/2 z-40 flex flex-col items-center gap-2.5">
-  {#each ECMWF_PARAMS as btn}
+  {#each params as btn}
     {@const isActive = activeVar === btn.id}
     <div class="relative group">
       <button
