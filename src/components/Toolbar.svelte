@@ -11,7 +11,7 @@
   const BUTTONS = [
     { id: 'radar', label: 'Radar', icon: 'radar', active: () => radarActive, enabled: true },
     { id: 'satelit', label: 'Satelit', icon: 'satellite', active: () => satelliteActive, enabled: true },
-    { id: 'ecmwf', label: 'ECMWF', icon: 'ecmwf', active: () => activeModel === 'ecmwf', enabled: false },
+    { id: 'ecmwf', label: 'ECMWF', icon: 'ecmwf', active: () => activeModel === 'ecmwf', enabled: true },
     { id: 'arome', label: 'AROME', icon: 'arome', active: () => activeModel === 'arome', enabled: false },
     { id: 'accessr', label: 'ACCESS-R', icon: 'accessr', active: () => activeModel === 'accessr', enabled: false },
     { id: 'cawo', label: 'CAWO', icon: 'cawo', active: () => activeModel === 'cawo', enabled: false },
@@ -20,6 +20,7 @@
   ];
 
   function handleClick(btn) {
+    if (!btn.enabled) return;
     if (btn.id === 'radar') {
       onOpenRadar();
     } else if (btn.id === 'satelit') {

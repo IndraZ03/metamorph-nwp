@@ -1,12 +1,21 @@
 <script>
+  import { ECMWF_LEGENDS, legendCss } from '../services/ecmwf.js';
+
   let {
     radarData = null,
     satelliteData = null,
+    ecmwfData = null,
     onCloseRadar,
     onCloseSatellite,
+    onCloseEcmwf,
     onChangeRadarFrame,
     onChangeSatelliteBaserun,
   } = $props();
+
+  function ecmwfLegend() {
+    if (!ecmwfData?.varId) return null;
+    return ECMWF_LEGENDS[ecmwfData.varId] || null;
+  }
 
   const RADAR_LEVELS = [
     { dbz: 5, color: '#07fef6' },
@@ -28,7 +37,7 @@
 
 <div class="fixed bottom-6 left-6 z-40 flex flex-col gap-3 max-w-sm">
   <!-- Active Layers Panel -->
-  {#if radarData || satelliteData}
+  {#if radarData || satelliteData || ecmwfData}
     <div class="p-3.5 rounded-2xl bg-white border border-slate-200 shadow-xl space-y-3">
       <div class="flex items-center justify-between text-xs font-bold text-slate-700 uppercase tracking-wider">
         <span>Lapisan Aktif</span>
@@ -115,6 +124,60 @@
                   </button>
                 {/each}
               </div>
+            </div>
+          {/if}
+        </div>
+      {/if}
+
+      {#if ecmwfData}
+        {@const legend = ecmwfLegend()}
+        <div class="p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col gap-2">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-amber-500"></span>
+              <span class="text-xs font-semibold text-slate-900">ECMWF IFS</span>
+              <span class="text-[10px] px-1.5 py-0.2 rounded bg-amber-100 font-mono text-amber-800 font-bold">0.25°</span>
+            </div>
+            <button
+              onclick={onCloseEcmwf}
+              class="w-6 h-6 rounded flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-slate-200 transition-colors"
+              title="Hapus ECMWF"
+            >
+              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M18 6L6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          <div class="text-[11px] text-slate-600 font-mono flex flex-col gap-0.5">
+            <div class="flex items-center justify-between">
+              <span>Run:</span>
+              <span class="text-slate-900 font-semibold">{ecmwfData.runTime}</span>
+            </div>
+            <div class="flex items-center justify-between">
+              <span>Valid:</span>
+              <span class="text-slate-900 font-semibold">{ecmwfData.validTime}</span>
+            </div>
+          </div>
+
+          {#if legend}
+            <div class="space-y-1 pt-1">
+              <div class="flex justify-between text-[10px] text-slate-500 font-mono">
+                <span>{legend.min}{legend.units ? ` ${legend.units}` : ''}</span>
+                <span class="font-sans font-medium text-slate-700">{legend.label}</span>
+                <span>{legend.max}{legend.units ? ` ${legend.units}` : ''}</span>
+              </div>
+              <div
+                class="h-2 rounded overflow-hidden border border-slate-300"
+                style="background: {legendCss(ecmwfData.varId)};"
+              ></div>
+              {#if legend.ticks}
+                <div class="flex justify-between text-[9px] text-slate-400 font-mono">
+                  {#each legend.ticks as tick}
+                    <span>{tick}</span>
+                  {/each}
+                </div>
+              {/if}
             </div>
           {/if}
         </div>

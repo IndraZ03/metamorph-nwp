@@ -1,9 +1,61 @@
 import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const ECMWF_OUT = path.resolve(ROOT, 'engine/output');
+
+function ecmwfStatic() {
+  return (req, res, next) => {
+    if (!req.url || !req.url.startsWith('/ecmwf/')) {
+      return next();
+    }
+    const rel = decodeURIComponent(req.url.split('?')[0].slice('/ecmwf/'.length));
+    const target = path.resolve(ECMWF_OUT, rel);
+    const relToOut = path.relative(ECMWF_OUT, target);
+    if (relToOut.startsWith('..') || path.isAbsolute(relToOut)) {
+      res.statusCode = 403;
+      res.end('Forbidden');
+      return;
+    }
+    fs.stat(target, (err, st) => {
+      if (err || !st.isFile()) {
+        res.statusCode = 404;
+        res.end('Not found');
+        return;
+      }
+      const ext = path.extname(target).toLowerCase();
+      const types = {
+        '.webp': 'image/webp',
+        '.json': 'application/json; charset=utf-8',
+        '.png': 'image/png',
+      };
+      res.statusCode = 200;
+      res.setHeader('Content-Type', types[ext] || 'application/octet-stream');
+      res.setHeader(
+        'Cache-Control',
+        ext === '.json' ? 'no-cache' : 'public, max-age=86400'
+      );
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      fs.createReadStream(target).pipe(res);
+    });
+  };
+}
 
 export default defineConfig({
   plugins: [
     svelte(),
+    {
+      name: 'ecmwf-tiles',
+      configureServer(server) {
+        server.middlewares.use(ecmwfStatic());
+      },
+      configurePreviewServer(server) {
+        server.middlewares.use(ecmwfStatic());
+      },
+    },
     {
       name: 'bmkg-proxy',
       configureServer(server) {
