@@ -16,6 +16,8 @@
     radarData = null,
     satelliteData = null,
     nwpData = null,
+    spartanData = null,
+    onCloseSpartan,
     onCloseRadar,
     onCloseSatellite,
     onCloseNwp,
@@ -101,6 +103,8 @@
     {radarData}
     {satelliteData}
     {nwpData}
+    {spartanData}
+    {onCloseSpartan}
     {onCloseRadar}
     {onCloseSatellite}
     {onCloseNwp}

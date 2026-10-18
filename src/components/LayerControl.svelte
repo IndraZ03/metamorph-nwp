@@ -1,14 +1,17 @@
 <script>
   import { legendCss, legendFor } from '../services/nwp.js';
   import { formatWibShort } from '../services/numericTiles.js';
+  import { SPARTAN_CLASSES, spartanRangeLabel } from '../services/spartan.js';
 
   let {
     radarData = null,
     satelliteData = null,
     nwpData = null,
+    spartanData = null,
     onCloseRadar,
     onCloseSatellite,
     onCloseNwp,
+    onCloseSpartan,
     onChangeSatelliteBaserun,
   } = $props();
 
@@ -40,7 +43,7 @@
   ];
 </script>
 
-{#if radarData || satelliteData || nwpData}
+{#if radarData || satelliteData || nwpData || spartanData}
   <div class="al" role="region" aria-label="Lapisan aktif">
     {#if radarData}
       <section class="al-row">
@@ -87,6 +90,24 @@
             {/each}
           </div>
         {/if}
+      </section>
+    {/if}
+
+    {#if spartanData}
+      <section class="al-row">
+        <header class="al-head">
+          <div class="al-meta">
+            <span class="al-name">SPARTAN {spartanData.product.code}</span>
+            <span class="al-sub">{spartanRangeLabel(spartanData.startDate, spartanData.endDate)}</span>
+          </div>
+          <button type="button" class="al-x" onclick={onCloseSpartan} aria-label="Tutup SPARTAN">×</button>
+        </header>
+        <div class="al-bar" title="Bahaya Kebakaran">
+          {#each SPARTAN_CLASSES as cls}
+            <i style="background:{cls.color}" title={cls.label}></i>
+          {/each}
+        </div>
+        <div class="al-scale"><span>Rendah</span><span>Bahaya Kebakaran</span><span>Ekstrem</span></div>
       </section>
     {/if}
 

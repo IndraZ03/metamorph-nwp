@@ -5,6 +5,7 @@
   import ParamToolbar from './components/ParamToolbar.svelte';
   import RadarModal from './components/RadarModal.svelte';
   import SatelliteModal from './components/SatelliteModal.svelte';
+  import SpartanModal from './components/SpartanModal.svelte';
   import UserLayers from './components/UserLayers.svelte';
   import DrawingSidebar from './components/DrawingSidebar.svelte';
   import NwpPopup from './components/NwpPopup.svelte';
@@ -39,6 +40,7 @@
     setLayerVisible,
     toggleSidebar,
   } from './services/drawing/store.svelte.js';
+  import { spartanTileTemplate } from './services/spartan.js';
 
   // State management using Svelte 5 runes
   let mapContainer = $state(null);
@@ -48,10 +50,12 @@
   // Modals visibility
   let showRadarModal = $state(false);
   let showSatelliteModal = $state(false);
+  let showSpartanModal = $state(false);
 
   // Active layer records
   let radarData = $state(null);
   let satelliteData = $state(null);
+  let spartanData = $state(null);
   let activeModel = $state(null);
   let nwpVar = $state(defaultVar('ecmwf'));
   let nwpData = $state(null);
@@ -898,6 +902,70 @@
     });
   }
 
+  // Manage SPARTAN Layer on Map (BMKG fire-weather tiles, TMS scheme)
+  function applySpartan(data) {
+    if (!map || !mapLoaded) return;
+
+    // Remove existing SPARTAN layer & source
+    if (map.getLayer('spartan-layer')) {
+      map.removeLayer('spartan-layer');
+    }
+    if (map.getSource('spartan-source')) {
+      map.removeSource('spartan-source');
+    }
+
+    if (!data) {
+      spartanData = null;
+      return;
+    }
+
+    const { product, startDate, endDate, opacity } = data;
+    const tileUrl = spartanTileTemplate({ product: product.id, start: startDate, end: endDate });
+    console.log('Applying SPARTAN tile URL template:', tileUrl);
+
+    map.addSource('spartan-source', {
+      type: 'raster',
+      scheme: 'tms',
+      tiles: [tileUrl],
+      tileSize: 256,
+      minzoom: 0,
+      maxzoom: 12,
+    });
+
+    // Place SPARTAN above satellite but below radar, coastline, boundaries & labels
+    let beforeLayer;
+    if (map.getLayer('radar-layer')) {
+      beforeLayer = 'radar-layer';
+    } else if (map.getLayer('coastline_outline')) {
+      beforeLayer = 'coastline_outline';
+    } else if (map.getLayer('boundary_county')) {
+      beforeLayer = 'boundary_county';
+    } else if (map.getLayer('boundary_state')) {
+      beforeLayer = 'boundary_state';
+    } else if (map.getLayer('boundary_country_inner')) {
+      beforeLayer = 'boundary_country_inner';
+    } else if (map.getLayer('waterway_label')) {
+      beforeLayer = 'waterway_label';
+    } else if (map.getLayer('place_hamlet')) {
+      beforeLayer = 'place_hamlet';
+    }
+
+    map.addLayer(
+      {
+        id: 'spartan-layer',
+        type: 'raster',
+        source: 'spartan-source',
+        paint: {
+          'raster-opacity': opacity ?? 0.9,
+          'raster-fade-duration': 200,
+        },
+      },
+      beforeLayer
+    );
+
+    spartanData = data;
+  }
+
   function handleSelectModel(modelId) {
     const next = activeModel === modelId ? null : modelId;
     activeModel = next;
@@ -1167,8 +1235,10 @@
     radarActive={!!radarData}
     satelliteActive={!!satelliteData}
     drawingActive={drawing.sidebarOpen}
+    spartanActive={!!spartanData}
     onOpenRadar={() => (showRadarModal = true)}
     onOpenSatellite={() => (showSatelliteModal = true)}
+    onOpenSpartan={() => (showSpartanModal = true)}
     onSelectModel={handleSelectModel}
     onToggleDrawing={handleToggleDrawing}
   />
@@ -1192,6 +1262,8 @@
     onClearAll={clearUserLayers}
     onRename={renameUserLayer}
     onToggleDraw={toggleDrawGroup}
+    {spartanData}
+    onCloseSpartan={() => applySpartan(null)}
     {radarData}
     {satelliteData}
     {nwpData}
@@ -1250,6 +1322,18 @@
       currentOpacity={satelliteData?.opacity ?? 0.9}
       onSelect={applySatellite}
       onClose={() => (showSatelliteModal = false)}
+    />
+  {/if}
+
+  <!-- SPARTAN Modal -->
+  {#if showSpartanModal}
+    <SpartanModal
+      currentProduct={spartanData?.product}
+      currentStart={spartanData?.startDate}
+      currentRangeDays={spartanData?.rangeDays}
+      currentOpacity={spartanData?.opacity ?? 0.9}
+      onSelect={applySpartan}
+      onClose={() => (showSpartanModal = false)}
     />
   {/if}
 </main>
