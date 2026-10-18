@@ -29,7 +29,12 @@ def main():
         "--param",
         type=str,
         choices=list(PARAMETERS.keys()),
-        help="Specific parameter to process. If omitted, all 7 parameters are processed.",
+        help="Specific parameter to process. If omitted, all parameters are processed.",
+    )
+    parser.add_argument(
+        "--params",
+        type=str,
+        help="Comma-separated parameter ids (e.g. u_10m,v_10m).",
     )
     parser.add_argument(
         "--run-all",
@@ -98,7 +103,16 @@ def main():
             print("Failed: No active run found on DWD.")
             sys.exit(1)
 
-        params = [args.param] if args.param else None
+        if args.params:
+            params = [p.strip() for p in args.params.split(",") if p.strip()]
+            unknown = [p for p in params if p not in PARAMETERS]
+            if unknown:
+                print(f"Unknown ICON params: {unknown}")
+                sys.exit(1)
+        elif args.param:
+            params = [args.param]
+        else:
+            params = None
         process_run(run_meta, max_steps=args.max_steps, params=params)
         return
 

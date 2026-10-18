@@ -110,11 +110,13 @@ def process_run(
             (s for s in manifest_mgr.data.get("timesteps", []) if s.get("step") == step),
             None,
         )
-        if existing and all(p in existing.get("params", []) for p in wanted):
+        have = existing.get("params", []) if existing else []
+        missing = [p for p in wanted if p not in have]
+        if not missing:
             print(f"[{i+1}/{len(timesteps)}] Step {step:03d} already complete, skip")
             continue
         t0 = time.time()
-        ok_count = process_full_step(run_meta, step, params, manifest_mgr)
+        ok_count = process_full_step(run_meta, step, missing, manifest_mgr)
         elapsed = time.time() - t0
         print(
             f"[{i+1}/{len(timesteps)}] Step {step:03d} completed "

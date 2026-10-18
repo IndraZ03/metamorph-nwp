@@ -77,7 +77,8 @@ function nwpStatic() {
         res.end('Forbidden');
         return;
       }
-      sendFile(res, target, { missingWebp: url.endsWith('.webp') });
+      const numeric = url.startsWith('/ecmwf/numeric/');
+      sendFile(res, target, { missingWebp: url.endsWith('.webp') && !numeric });
       return;
     }
 
@@ -124,7 +125,7 @@ function nwpStatic() {
         res.end('Forbidden');
         return;
       }
-      sendFile(res, target, { missingWebp: true });
+      sendFile(res, target);
       return;
     }
 
@@ -167,7 +168,7 @@ function nwpStatic() {
         res.end('Forbidden');
         return;
       }
-      sendFile(res, target, { missingWebp: true });
+      sendFile(res, target);
       return;
     }
 

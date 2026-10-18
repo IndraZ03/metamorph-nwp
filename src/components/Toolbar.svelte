@@ -3,9 +3,11 @@
     activeModel = null,
     radarActive = false,
     satelliteActive = false,
+    drawingActive = false,
     onOpenRadar,
     onOpenSatellite,
     onSelectModel,
+    onToggleDrawing,
   } = $props();
 
   const BUTTONS = [
@@ -32,6 +34,33 @@
 </script>
 
 <div class="fixed right-5 top-1/2 -translate-y-1/2 z-40 flex flex-col items-center gap-2.5">
+  <div class="relative group">
+    <button
+      type="button"
+      onclick={() => onToggleDrawing?.()}
+      class="w-12 h-12 rounded-full flex items-center justify-center border transition-all duration-200 backdrop-blur-md cursor-pointer {
+        drawingActive
+          ? 'bg-[#2563EB] text-white border-[#2563EB] shadow-lg shadow-blue-500/40 ring-2 ring-blue-400/50 scale-105'
+          : 'bg-white/10 hover:bg-white/20 text-white border-white/20 shadow-lg shadow-black/20 hover:border-white/35 hover:scale-105 active:scale-95'
+      }"
+      aria-label="Drawing"
+      aria-expanded={drawingActive}
+      aria-controls="drawing-sidebar"
+      title="Drawing"
+    >
+      <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 19l7-7 3 3-7 7-3-3z" />
+        <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
+        <path d="M2 2l7.586 7.586" />
+        <circle cx="11" cy="11" r="2" />
+      </svg>
+    </button>
+    <div
+      class="absolute right-full top-1/2 -translate-y-1/2 mr-3 px-3 py-1.5 rounded-xl bg-slate-900/90 backdrop-blur-md text-xs font-medium text-white whitespace-nowrap shadow-2xl border border-white/10 opacity-0 pointer-events-none group-hover:opacity-100 transition-all duration-150 z-50"
+    >
+      Drawing
+    </div>
+  </div>
   {#each BUTTONS as btn}
     {@const isActive = btn.active()}
     <div class="relative group">

@@ -6,7 +6,9 @@ const TILE_SIZE = 256;
 async function loadNumericTile(url, signal) {
   const response = await fetch(url, { signal });
   if (!response.ok) throw new Error(`Wind tile HTTP ${response.status}`);
-  const bitmap = await createImageBitmap(await response.blob(), { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
+  const blob = await response.blob();
+  if (blob.size < 64) throw new Error('Empty wind tile');
+  const bitmap = await createImageBitmap(blob, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
   try {
     if (bitmap.width !== TILE_SIZE || bitmap.height !== TILE_SIZE) throw new Error('Invalid wind tile size');
     const canvas = document.createElement('canvas');
@@ -18,6 +20,7 @@ async function loadNumericTile(url, signal) {
     for (let i = 0; i < values.length; i++) {
       values[i] = decodeRgb(...rgba.subarray(i * 4, i * 4 + 4)) ?? NaN;
     }
+    if (!values.some(Number.isFinite)) throw new Error('Empty wind tile');
     return values;
   } finally {
     bitmap.close();
@@ -116,6 +119,7 @@ export function screenVelocity(map, lon, lat, wind) {
   const cosLat = Math.max(0.01, Math.cos(lat * Math.PI / 180));
   const end = map.project([lon + wind.u * 0.01 / cosLat, lat + wind.v * 0.01]);
   const pixelsPerDegree = 512 * 2 ** map.getZoom() / 360;
-  const scale = 6 * cosLat / (0.01 * pixelsPerDegree);
+  // Visual scale only: 1 m/s → 10 px/s. Weak land winds stay readable without racing.
+  const scale = 10 * cosLat / (0.01 * pixelsPerDegree);
   return { x: (end.x - origin.x) * scale, y: (end.y - origin.y) * scale };
 }

@@ -174,7 +174,12 @@ def colorize(var, values: np.ndarray) -> np.ndarray:
 
 # ---------------------------------------------------------------- tile writer
 
-def render_timestep(grids: dict, out_root: str, numeric_root: str | None = None) -> dict[str, int]:
+def render_timestep(
+    grids: dict,
+    out_root: str,
+    numeric_root: str | None = None,
+    keys: list[str] | None = None,
+) -> dict[str, int]:
     """Render all variables of one timestep to tiles.
 
     grids: output of decode.decode_timestep (incl. '_lat'/'_lon').
@@ -185,8 +190,10 @@ def render_timestep(grids: dict, out_root: str, numeric_root: str | None = None)
     src_lat = grids["_lat"]
     src_lon = grids["_lon"]
     counts: dict[str, int] = {}
-    for key, var in config.VARIABLES.items():
-        if key not in grids:
+    wanted = keys if keys is not None else list(config.VARIABLES)
+    for key in wanted:
+        var = config.VARIABLES.get(key)
+        if var is None or key not in grids:
             continue
         field = grids[key]
         written = 0

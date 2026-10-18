@@ -16,6 +16,7 @@ from .manifest import (
     publish_latest,
     read_latest,
     run_id_from_dt,
+    sync_catalog,
     write_run_manifest,
 )
 from .tiles import write_step_tiles
@@ -60,11 +61,47 @@ def _load_run_manifest(run_id: str) -> dict | None:
         return None
 
 
+# Display / numeric ids → GRIB shortNames needed to decode them.
+_VAR_GRIB = {
+    "t2m": ["2t"],
+    "d2m": ["2d"],
+    "rh": ["2t", "2d"],
+    "msl": ["msl"],
+    "tp": ["tp"],
+    "cape": ["mucape"],
+    "tcc": ["tcc"],
+    "u10": ["10u"],
+    "v10": ["10v"],
+    "wind10m": ["10u", "10v"],
+}
+
+
+def _wanted_ids(keys: list[str] | None) -> list[str]:
+    if keys:
+        return list(keys)
+    return [v["id"] for v in config.VARIABLES]
+
+
+def _grib_params(var_ids: list[str]) -> list[str]:
+    out: list[str] = []
+    for vid in var_ids:
+        for p in _VAR_GRIB.get(vid, []):
+            if p not in out:
+                out.append(p)
+    return out or list(config.FETCH_PARAMS)
+
+
+def _missing_ids(row: dict, wanted: list[str]) -> list[str]:
+    have = set(row.get("vars") or [])
+    return [vid for vid in wanted if vid not in have]
+
+
 def process_run(
     run_time: datetime,
     max_steps: int | None = None,
     skip_if_same: bool = True,
     only_steps: list[int] | None = None,
+    keys: list[str] | None = None,
 ) -> dict | None:
     run_id = run_id_from_dt(run_time)
     hour = run_time.hour
@@ -97,22 +134,35 @@ def process_run(
                 )
         existing["steps"].sort(key=lambda s: s["step"])
         manifest = existing
+        sync_catalog(manifest)
     else:
         manifest = empty_manifest(run_time, found)
 
-    ready_set = {s["step"] for s in manifest["steps"] if s.get("ready")}
-    pending = [s for s in found if s not in ready_set]
+    wanted = _wanted_ids(keys)
+    by_step = {row["step"]: row for row in manifest["steps"]}
+    missing_by_step: dict[int, list[str]] = {}
+    pending: list[int] = []
+    for step in found:
+        row = by_step.get(step)
+        if row is None:
+            continue
+        need = wanted if not skip_if_same else _missing_ids(row, wanted)
+        if not row.get("ready") and keys is None:
+            need = wanted
+        if need:
+            pending.append(step)
+            missing_by_step[step] = need
     if only_steps is not None:
-        want = set(only_steps)
-        pending = [s for s in pending if s in want]
-    if not skip_if_same:
+        want_steps = set(only_steps)
+        pending = [s for s in pending if s in want_steps]
+    if not skip_if_same and keys is None:
         for row in manifest["steps"]:
             row["ready"] = False
             row["vars"] = []
         pending = list(found)
-        ready_set = set()
+        missing_by_step = {s: wanted for s in found}
     if skip_if_same and not pending:
-        log.info("run %s already complete (%s steps) — skip", run_id, len(ready_set))
+        log.info("run %s already complete (%s steps) — skip", run_id, len(by_step))
         publish_latest(manifest)
         return manifest
 
@@ -123,14 +173,21 @@ def process_run(
     write_run_manifest(manifest)
 
     for step in pending:
+        need = missing_by_step.get(step, wanted)
+        grib_params = _grib_params(need)
         grib = cache_dir / f"{step}.grib2"
         try:
-            retrieve_step(run_time, step, grib)
+            if grib.exists() and any(v in need for v in ("wind10m", "u10", "v10")):
+                grib.unlink(missing_ok=True)
+            retrieve_step(run_time, step, grib, params=grib_params)
             fields = decode_step(grib)
             if not fields:
                 log.warning("step %s decoded empty", step)
                 continue
-            vars_ready = write_step_tiles(run_dir, step, fields)
+            vars_ready = write_step_tiles(run_dir, step, fields, keys=need)
+            if not vars_ready:
+                log.warning("step %s produced no tiles for %s", step, ",".join(need))
+                continue
             mark_step_ready(manifest, step, vars_ready)
             publish_latest(manifest)
             try:
@@ -157,6 +214,11 @@ def main(argv: list[str] | None = None) -> int:
         "--force-numeric",
         action="store_true",
         help="rebake ready steps that lack numeric tiles (keeps visual)",
+    )
+    p.add_argument(
+        "--vars",
+        default=None,
+        help="comma-separated var ids to bake (e.g. wind10m,u10,v10)",
     )
     args = p.parse_args(argv)
 
@@ -215,11 +277,13 @@ def main(argv: list[str] | None = None) -> int:
                 sorted(unmarked),
             )
     process_max = None if only_steps is not None else args.max_steps
+    keys = [s.strip() for s in args.vars.split(",") if s.strip()] if args.vars else None
     manifest = process_run(
         run_time,
         max_steps=process_max,
         skip_if_same=not args.force,
         only_steps=only_steps,
+        keys=keys,
     )
     if manifest is None:
         return 1

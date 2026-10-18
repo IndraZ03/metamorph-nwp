@@ -5,8 +5,8 @@
   import ParamToolbar from './components/ParamToolbar.svelte';
   import RadarModal from './components/RadarModal.svelte';
   import SatelliteModal from './components/SatelliteModal.svelte';
-  import LayerControl from './components/LayerControl.svelte';
   import UserLayers from './components/UserLayers.svelte';
+  import DrawingSidebar from './components/DrawingSidebar.svelte';
   import NwpPopup from './components/NwpPopup.svelte';
   import { proxyCuaca, proxySatelliteTile } from './services/bmkg.js';
   import {
@@ -19,7 +19,8 @@
     modelRunId,
     modelRunTime,
     modelZoom,
-    paramsFor,
+    paramsAvailable,
+    availableVars,
     listSteps as listNwpSteps,
     nearestStep,
     pickStep as pickNwpStep,
@@ -28,8 +29,16 @@
   } from './services/nwp.js';
   import ForecastTimeline from './components/ForecastTimeline.svelte';
   import { inspectValues, reverseGeocode } from './services/numericTiles.js';
+  import { inspectPop } from './services/inspectPop.svelte.js';
   import { bboxOf, colorFor, countByGeometry, layerDefs } from './services/userLayers.js';
   import { WindOverlay } from './services/windAnimation.js';
+  import { DrawingController } from './services/drawing/controller.js';
+  import {
+    drawing,
+    hydrate as hydrateDrawings,
+    setLayerVisible,
+    toggleSidebar,
+  } from './services/drawing/store.svelte.js';
 
   // State management using Svelte 5 runes
   let mapContainer = $state(null);
@@ -54,8 +63,7 @@
   let nwpPopupApp = null;
   let nwpHost = null;
   let nwpClickSeq = 0;
-  let nwpPop = $state({ loading: false, data: null, error: null });
-  let nwpManifest = null;
+  let nwpManifest = $state(null);
   let nwpSteps = $state([]);
   let nwpStepToken = $state(null);
   let nwpPlaying = $state(false);
@@ -75,11 +83,12 @@
   let windActive = $state(false);
   let windSpeed = $state(1.0);
   let windOverlay = null;
-  let windStatus = $state({ state: 'ready', mode: 'demo', message: 'Simulasi — bukan data model' });
+  let windStatus = $state({ state: 'ready', mode: 'unavailable', message: 'Data U/V belum dimuat' });
 
   // User overlays (GeoJSON / GPX)
   let userLayers = $state([]);
   let userLayerSeq = 0;
+  let drawCtrl = null;
 
   function setupCartoBoundaries(m) {
     if (!m) return;
@@ -188,6 +197,12 @@
       mapLoaded = true;
 
       setupCartoBoundaries(m);
+      hydrateDrawings().then(() => {
+        if (drawCtrl) drawCtrl.sync();
+        else if (map) {
+          drawCtrl = new DrawingController(map);
+        }
+      });
       console.log('MapLibre GL Carto Dark Matter loaded successfully');
     });
 
@@ -195,6 +210,7 @@
       if (m.isStyleLoaded()) {
         setupCartoBoundaries(m);
         restoreUserLayers();
+        if (drawCtrl) drawCtrl.restore();
       }
     });
 
@@ -203,6 +219,7 @@
     });
 
     m.on('click', (e) => {
+      if (drawing.sidebarOpen || drawCtrl?.blocksInspect()) return;
       handleNwpClick(e).catch((err) => console.warn('NWP click', err));
     });
 
@@ -210,6 +227,10 @@
       stopNwpPoll();
       stopNwpPlay();
       closeNwpPopup();
+      if (drawCtrl) {
+        drawCtrl.destroy();
+        drawCtrl = null;
+      }
       if (windOverlay) {
         windOverlay.destroy();
         windOverlay = null;
@@ -252,9 +273,9 @@
       nwpPopupApp = null;
     }
     nwpHost = null;
-    nwpPop.loading = false;
-    nwpPop.data = null;
-    nwpPop.error = null;
+    inspectPop.loading = false;
+    inspectPop.data = null;
+    inspectPop.error = null;
     if (nwpPopup) {
       const p = nwpPopup;
       nwpPopup = null;
@@ -264,19 +285,19 @@
 
   function setNwpPopupProps(lngLat, props) {
     if (!map) return;
-    nwpPop.loading = props.loading ?? false;
-    nwpPop.data = props.data ?? null;
-    nwpPop.error = props.error ?? null;
+    inspectPop.loading = props.loading ?? false;
+    inspectPop.data = props.data ?? null;
+    inspectPop.error = props.error ?? null;
     if (!nwpHost) nwpHost = document.createElement('div');
     if (!nwpPopupApp) {
-      nwpPopupApp = mount(NwpPopup, { target: nwpHost, props: nwpPop });
+      nwpPopupApp = mount(NwpPopup, { target: nwpHost });
     }
     if (!nwpPopup) {
       nwpPopup = new maplibregl.Popup({
         closeButton: true,
         closeOnClick: false,
         focusAfterOpen: false,
-        maxWidth: '300px',
+        maxWidth: '240px',
         className: 'nwp-inspect-popup',
       });
       nwpPopup.on('close', () => {
@@ -292,8 +313,11 @@
         nwpHost = null;
       });
     }
-    nwpPopup.setLngLat(lngLat).setDOMContent(nwpHost);
-    if (!nwpPopup.isOpen()) nwpPopup.addTo(map);
+    if (!nwpPopup.isOpen()) {
+      nwpPopup.setLngLat(lngLat).setDOMContent(nwpHost).addTo(map);
+    } else {
+      nwpPopup.setLngLat(lngLat);
+    }
   }
 
   async function handleNwpClick(e) {
@@ -320,7 +344,7 @@
         modelId,
         manifest,
         step,
-        params: paramsFor(modelId),
+        params: paramsAvailable(modelId, manifest),
         lat,
         lon: lng,
         zoom: map.getZoom(),
@@ -329,7 +353,7 @@
           setNwpPopupProps([lng, lat], {
             loading: true,
             error: null,
-            data: { ...base, ...partial, lokasi: nwpPop.data?.lokasi ?? null },
+            data: { ...base, ...partial, lokasi: inspectPop.data?.lokasi ?? null },
           });
         },
       });
@@ -337,7 +361,7 @@
       setNwpPopupProps([lng, lat], {
         loading: false,
         error: null,
-        data: { ...base, ...result, lokasi: nwpPop.data?.lokasi ?? null },
+        data: { ...base, ...result, lokasi: inspectPop.data?.lokasi ?? null },
       });
       const lokasi = await geoP;
       if (seq !== nwpClickSeq) return;
@@ -684,7 +708,12 @@
     }
 
     if (activeModel !== modelId) return;
-    const varId = nwpVar || defaultVar(modelId);
+    const readyVars = availableVars(modelId, manifest);
+    const fallback = defaultVar(modelId);
+    if (readyVars.length && nwpVar && !readyVars.includes(nwpVar)) {
+      nwpVar = readyVars.includes(fallback) ? fallback : readyVars[0];
+    }
+    const varId = nwpVar || fallback;
     const steps = listNwpSteps(modelId, manifest, varId);
     nwpManifest = manifest;
     nwpSteps = steps;
@@ -886,6 +915,7 @@
 
     if (GLOBAL_MODELS.includes(modelId)) {
       if (next) {
+        nwpManifest = null;
         nwpVar = defaultVar(next);
         nwpWantValid = null;
         applyNwp(next).catch((err) => console.warn('NWP toggle', err));
@@ -899,6 +929,8 @@
 
   function handleSelectNwpVar(varId) {
     if (nwpVar === varId) return;
+    const ready = availableVars(activeModel, nwpManifest);
+    if (ready.length && !ready.includes(varId)) return;
     nwpVar = varId;
     if (GLOBAL_MODELS.includes(activeModel)) {
       applyNwp(activeModel).catch((err) => console.warn('NWP var', err));
@@ -907,8 +939,8 @@
 
   function currentWindContext() {
     if (!GLOBAL_MODELS.includes(activeModel)) return null;
-    if (!nwpInspect || nwpInspect.modelId !== activeModel) {
-      return { modelId: activeModel, bbox: MODELS[activeModel].bbox };
+    if (!nwpInspect || nwpInspect.modelId !== activeModel || !nwpInspect.manifest || !nwpInspect.step) {
+      return null;
     }
     const { modelId, manifest, step } = nwpInspect;
     return {
@@ -1056,6 +1088,53 @@
       if (!map.getSource(`user-${layer.id}`)) addUserLayerToMap(layer);
     }
   }
+
+  function syncDraw() {
+    drawCtrl?.sync();
+    drawCtrl?.applyMode();
+  }
+
+  function cancelDrawDraft() {
+    drawCtrl?.cancelDraft();
+    drawCtrl?.applyMode();
+  }
+
+  function finishDrawDraft() {
+    drawCtrl?.finishIfPossible();
+    drawCtrl?.applyMode();
+  }
+
+  function adoptDrawTool(id) {
+    drawCtrl?.adoptTool(id);
+  }
+
+  function handleToggleDrawing() {
+    if (drawing.sidebarOpen) cancelDrawDraft();
+    toggleSidebar();
+    syncDraw();
+  }
+
+  function toggleDrawGroup(id) {
+    const layer = drawing.layers.find((l) => l.id === id);
+    if (!layer) return;
+    setLayerVisible(id, !layer.visible);
+    syncDraw();
+  }
+
+  function exportDrawPng() {
+    if (!map) return;
+    try {
+      const canvas = map.getCanvas();
+      const url = canvas.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `map-drawing-${Date.now()}.png`;
+      a.click();
+    } catch (err) {
+      drawing.error = 'PNG gagal (raster silang origin). Coba GeoJSON.';
+      console.warn('PNG export', err);
+    }
+  }
 </script>
 
 <main
@@ -1087,26 +1166,46 @@
     {activeModel}
     radarActive={!!radarData}
     satelliteActive={!!satelliteData}
+    drawingActive={drawing.sidebarOpen}
     onOpenRadar={() => (showRadarModal = true)}
     onOpenSatellite={() => (showSatelliteModal = true)}
     onSelectModel={handleSelectModel}
+    onToggleDrawing={handleToggleDrawing}
   />
 
-  <!-- User overlays (GeoJSON / GPX) — button at top-right -->
+  <DrawingSidebar
+    onSync={syncDraw}
+    onCancelDraft={cancelDrawDraft}
+    onFinishDraft={finishDrawDraft}
+    onAdoptTool={adoptDrawTool}
+    onExportPng={exportDrawPng}
+  />
+
+  <!-- Active layers + user overlays — button at top-right -->
   <UserLayers
     layers={userLayers}
+    drawGroups={drawing.layers}
     onAdd={addUserLayer}
     onToggle={toggleUserLayer}
     onFit={fitUserLayer}
     onRemove={removeUserLayer}
     onClearAll={clearUserLayers}
     onRename={renameUserLayer}
+    onToggleDraw={toggleDrawGroup}
+    {radarData}
+    {satelliteData}
+    {nwpData}
+    onCloseRadar={() => applyRadar(null)}
+    onCloseSatellite={() => applySatellite(null)}
+    onCloseNwp={closeNwp}
+    onChangeSatelliteBaserun={changeSatelliteBaserun}
   />
 
   {#if GLOBAL_MODELS.includes(activeModel)}
     <ParamToolbar
-      params={paramsFor(activeModel)}
+      params={paramsAvailable(activeModel, nwpManifest)}
       activeVar={nwpVar}
+      readyIds={availableVars(activeModel, nwpManifest)}
       onSelectVar={handleSelectNwpVar}
       {windActive}
       {windSpeed}
@@ -1115,18 +1214,6 @@
       onChangeWindSpeed={changeWindSpeed}
     />
   {/if}
-
-  <!-- Active Layer Legend & Timeline Controls (Bottom Left) -->
-  <LayerControl
-    {radarData}
-    {satelliteData}
-    {nwpData}
-    raised={GLOBAL_MODELS.includes(activeModel) && nwpSteps.length > 0}
-    onCloseRadar={() => applyRadar(null)}
-    onCloseSatellite={() => applySatellite(null)}
-    onCloseNwp={closeNwp}
-    onChangeSatelliteBaserun={changeSatelliteBaserun}
-  />
 
   {#if GLOBAL_MODELS.includes(activeModel)}
     <ForecastTimeline

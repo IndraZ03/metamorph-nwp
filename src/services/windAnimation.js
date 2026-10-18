@@ -1,12 +1,12 @@
-import { WindField, DemoWindField, screenVelocity } from './windField.js';
+import { WindField, screenVelocity } from './windField.js';
 
 export class WindOverlay {
   constructor(map, { speed = 1.0, onStatus } = {}) {
     this.map = map;
     this.speed = Math.max(0.2, Math.min(3.0, Number(speed) || 1.0));
     this.onStatus = onStatus;
-    this.field = new DemoWindField();
-    this.mode = 'demo';
+    this.field = null;
+    this.mode = 'unavailable';
     this.abortController = null;
     this.contextKey = null;
     this.loading = false;
@@ -92,18 +92,18 @@ export class WindOverlay {
     this.abortController = controller;
     this.contextKey = contextKey;
     this.loading = false;
-    this.field = new DemoWindField(context?.bbox);
-    this.mode = 'demo';
-    this.initParticles();
+    this.field = null;
+    this.mode = 'unavailable';
+    this.particles = [];
     this.ctx?.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
     if (!context?.modelId || !context?.manifest || !context?.step) {
-      this.onStatus?.({ state: 'ready', mode: 'demo', message: 'Simulasi — bukan data model' });
+      this.onStatus?.({ state: 'ready', mode: 'unavailable', message: 'Pilih model NWP dulu' });
       return;
     }
 
     this.loading = true;
-    this.onStatus?.({ state: 'loading', mode: 'demo', message: 'Memuat data angin U/V...' });
+    this.onStatus?.({ state: 'loading', mode: 'unavailable', message: 'Memuat data angin U/V...' });
     try {
       const field = new WindField(context);
       await field.load(controller.signal);
@@ -114,22 +114,22 @@ export class WindOverlay {
       this.loading = false;
       this.initParticles();
       this.onStatus?.({ state: 'ready', mode: 'model', message: 'Data NWP U/V Aktif' });
-    } catch {
+    } catch (error) {
       if (controller.signal.aborted || !this.map) return;
-      // Keep demo explicitly separate from model forecasts when U/V tiles are unavailable.
-      this.field = new DemoWindField(context.bbox || [88, -15, 148, 12]);
-      this.mode = 'demo';
+      this.field = null;
+      this.mode = 'unavailable';
       this.loading = false;
-      this.initParticles();
-      this.onStatus?.({ state: 'ready', mode: 'demo', message: 'Simulasi (U/V model belum tersedia)' });
+      this.particles = [];
+      this.ctx?.clearRect(0, 0, this.canvas.width, this.canvas.height);
+      const msg = error?.message || 'Data U/V 10 m belum tersedia';
+      this.onStatus?.({ state: 'ready', mode: 'unavailable', message: msg });
     }
   }
 
   initParticles() {
-    if (!this.map) return;
+    if (!this.map || !this.field) return;
     const rect = this.map.getCanvas().getBoundingClientRect();
-    // Ventusky density: ~1800 for desktop, ~800 for mobile
-    const count = Math.max(700, Math.min(2200, Math.floor((rect.width * rect.height) / 850)));
+    const count = Math.max(700, Math.min(1800, Math.floor((rect.width * rect.height) / 950)));
     this.particles = [];
     for (let i = 0; i < count; i++) {
       this.particles.push(this.createParticle());
@@ -150,8 +150,7 @@ export class WindOverlay {
     const lon = minLon + Math.random() * Math.max(0, maxLon - minLon);
     const lat = minLat + Math.random() * Math.max(0, maxLat - minLat);
 
-    // Lifetime in seconds, independent of monitor refresh rate.
-    const maxAge = 1 + Math.random() * 1.2;
+    const maxAge = 1.6 + Math.random() * 1.6;
     const pt = this.map.project([lon, lat]);
 
     return {
@@ -188,7 +187,7 @@ export class WindOverlay {
   }
 
   animate(time) {
-    if (!this.running || !this.field) {
+    if (!this.running) {
       this.animId = null;
       return;
     }
@@ -199,7 +198,11 @@ export class WindOverlay {
   }
 
   render(dt = 1 / 60) {
-    if (!this.ctx || !this.map || !this.canvas || !this.field) return;
+    if (!this.ctx || !this.map || !this.canvas) return;
+    if (!this.field || this.mode !== 'model') {
+      this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+      return;
+    }
 
     const rect = this.map.getCanvas().getBoundingClientRect();
     const w = rect.width;
@@ -210,14 +213,12 @@ export class WindOverlay {
       return;
     }
 
-    // Ventusky trail fade: 0.18 provides crisp, clean short streaks without spaghetti clutter
     this.ctx.globalCompositeOperation = 'destination-out';
-    this.ctx.fillStyle = `rgba(0, 0, 0, ${1 - Math.exp(-dt / 0.12)})`;
+    this.ctx.fillStyle = `rgba(0, 0, 0, ${1 - Math.exp(-dt / 0.24)})`;
     this.ctx.fillRect(0, 0, w, h);
 
-    // Streamline stroke settings
     this.ctx.globalCompositeOperation = 'source-over';
-    this.ctx.lineWidth = 0.95;
+    this.ctx.lineWidth = 1.2;
     this.ctx.lineCap = 'round';
     this.ctx.lineJoin = 'round';
 
@@ -230,7 +231,6 @@ export class WindOverlay {
     for (let i = 0; i < this.particles.length; i++) {
       let p = this.particles[i];
 
-      // Respawn expired or out-of-viewport particles
       if (
         p.age >= p.maxAge ||
         p.lon < west ||
@@ -253,25 +253,26 @@ export class WindOverlay {
         continue;
       }
 
+      const spd = Math.hypot(wind.u, wind.v);
+      const landBoost = spd < 6 ? (6 / Math.max(spd, 1.6)) ** 0.32 : 1;
       const v = screenVelocity(this.map, p.lon, p.lat, wind);
-      const nextX = p.prevX + v.x * this.speed * dt;
-      const nextY = p.prevY + v.y * this.speed * dt;
+      const nextX = p.prevX + v.x * this.speed * landBoost * dt;
+      const nextY = p.prevY + v.y * this.speed * landBoost * dt;
 
       const segDist = Math.hypot(nextX - p.prevX, nextY - p.prevY);
 
       if (segDist < 30.0) {
-        // Ventusky triangular alpha: quick fade-in, crisp peak, quick fade-out
         const lifeRatio = p.age / p.maxAge;
-        let alpha = 0.85;
-        if (lifeRatio < 0.25) {
-          alpha = (lifeRatio / 0.25) * 0.85;
-        } else if (lifeRatio > 0.65) {
-          alpha = ((1.0 - lifeRatio) / 0.35) * 0.85;
+        const peak = spd < 5 ? 0.82 : 0.7;
+        let alpha = peak;
+        if (lifeRatio < 0.2) {
+          alpha = (lifeRatio / 0.2) * peak;
+        } else if (lifeRatio > 0.72) {
+          alpha = ((1.0 - lifeRatio) / 0.28) * peak;
         }
 
-        const spd = Math.hypot(wind.u, wind.v);
-        const cyanShimmer = Math.min(255, Math.floor(225 + spd * 1.8));
-        this.ctx.strokeStyle = `rgba(240, 248, ${cyanShimmer}, ${alpha.toFixed(3)})`;
+        const cyanShimmer = Math.min(255, Math.floor(228 + Math.min(spd, 12) * 2));
+        this.ctx.strokeStyle = `rgba(248, 252, ${cyanShimmer}, ${alpha.toFixed(3)})`;
 
         this.ctx.beginPath();
         this.ctx.moveTo(p.prevX, p.prevY);
@@ -279,7 +280,6 @@ export class WindOverlay {
         this.ctx.stroke();
       }
 
-      // Project back to geographical coordinates
       const nextLngLat = this.map.unproject([nextX, nextY]);
       p.lon = nextLngLat.lng;
       p.lat = nextLngLat.lat;

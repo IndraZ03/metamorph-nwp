@@ -24,6 +24,9 @@ def _synthetic_grids():
         "rain": np.clip(5.0 * np.sin(np.radians(lon2d * 3)) ** 2 - 2.0, 0, None),
         "cape": np.clip(1500.0 + 800.0 * np.sin(np.radians(lat2d * 4)), 0, None),
         "clouds": np.clip(50.0 + 40.0 * np.sin(np.radians(lon2d)), 0, 100),
+        "u10": -4.0 + 2.0 * np.sin(np.radians(lat2d)),
+        "v10": 3.0 + 1.5 * np.cos(np.radians(lon2d)),
+        "wind": 5.0 + 2.0 * np.sin(np.radians(lon2d)),
         "_lat": lat,
         "_lon": lon,
     }

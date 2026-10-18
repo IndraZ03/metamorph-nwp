@@ -21,6 +21,9 @@ from datetime import datetime, timedelta, timezone
 
 from . import config
 
+# Keys with no GRIB message of their own (derived after decode).
+DERIVED_KEYS = frozenset({"wind"})
+
 
 def _request(url: str, headers: dict | None = None, timeout: int = config.HTTP_TIMEOUT_S):
     hdrs = {"User-Agent": config.USER_AGENT}
@@ -122,18 +125,23 @@ def fetch_idx(run: datetime, forecast_hour: int) -> list[dict]:
     return msgs
 
 
-def pick_messages(idx_msgs: list[dict]) -> dict[str, dict]:
+def pick_messages(idx_msgs: list[dict], keys: list[str] | None = None) -> dict[str, dict]:
     """Pick one GRIB message per configured variable.
 
     Rules:
     - match (grib_var, grib_level) from config
+    - skip derived keys with no GRIB message (e.g. wind speed from u10/v10)
     - if several match and a step_type is configured, prefer messages whose
       .idx info contains that stepType marker ('accum' -> 'acc fcst',
       'avg' -> 'ave fcst'); otherwise take the first match
       (GFS writes APCP twice with identical metadata — either copy is fine).
     """
     picked: dict[str, dict] = {}
-    for key, var in config.VARIABLES.items():
+    wanted = keys if keys is not None else list(config.VARIABLES)
+    for key in wanted:
+        var = config.VARIABLES.get(key)
+        if var is None or key in DERIVED_KEYS:
+            continue
         cands = [m for m in idx_msgs
                  if m["var"] == var.grib_var and m["level"] == var.grib_level]
         if not cands:
@@ -159,13 +167,18 @@ def _download_range(url: str, start: int, end: int | None) -> bytes:
     return data
 
 
-def download_timestep(run: datetime, forecast_hour: int, out_path: str) -> dict:
-    """Download one forecast hour: only the 7 variables, concatenated as one
-    GRIB2 file. Returns {variable_key: grib_metadata} for the manifest
-    (incl. rain stepRange parsed from the .idx info)."""
+def download_timestep(
+    run: datetime,
+    forecast_hour: int,
+    out_path: str,
+    keys: list[str] | None = None,
+) -> dict:
+    """Download one forecast hour: only the requested GRIB variables, concatenated
+    as one GRIB2 file. Returns metadata for the manifest (incl. rain stepRange
+    parsed from the .idx info)."""
     url = _grib_url(run, forecast_hour)
     idx = fetch_idx(run, forecast_hour)
-    picked = pick_messages(idx)
+    picked = pick_messages(idx, keys=keys)
 
     # rain: record the accumulation window (e.g. "0-1 hour acc fcst")
     meta: dict = {"forecast_hour": forecast_hour}

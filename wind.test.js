@@ -39,25 +39,25 @@ test('missing numeric data is not silently synthesized by model field', async ()
 test('projection sends positive U east and positive V north', () => {
   const map = { getZoom: () => 0, project: ([lon, lat]) => ({ x: lon * 512 / 360, y: -lat * 512 / 360 }) };
   const result = screenVelocity(map, 110, 0, { u: 3, v: 4 });
-  assert.ok(Math.abs(result.x - 18) < 1e-8);
-  assert.ok(Math.abs(result.y + 24) < 1e-8);
+  assert.ok(Math.abs(result.x - 30) < 1e-8);
+  assert.ok(Math.abs(result.y + 40) < 1e-8);
 });
 
-test('missing manifest immediately selects labeled demo', async () => {
+test('missing manifest does not invent a wind field', async () => {
   const layer = overlay();
   await layer.setContext({ modelId: 'ecmwf' });
-  assert.ok(layer.field instanceof DemoWindField);
-  assert.equal(layer.status.mode, 'demo');
+  assert.equal(layer.field, null);
+  assert.equal(layer.status.mode, 'unavailable');
 });
 
-test('failed data load keeps animation field and labels simulation', async () => {
+test('failed data load leaves overlay empty, not a simulation', async () => {
   const original = WindField.prototype.load;
   WindField.prototype.load = async () => { throw new Error('404'); };
   try {
     const layer = overlay();
     await layer.setContext(context);
-    assert.ok(layer.field instanceof DemoWindField);
-    assert.equal(layer.status.mode, 'demo');
+    assert.equal(layer.field, null);
+    assert.equal(layer.status.mode, 'unavailable');
   } finally { WindField.prototype.load = original; }
 });
 
@@ -95,7 +95,7 @@ test('successful U/V loads switch to model; stale requests cannot overwrite new 
     await layer.setContext({ modelId: 'ecmwf' });
     finish();
     await pending;
-    assert.equal(layer.status.mode, 'demo');
+    assert.equal(layer.status.mode, 'unavailable');
     WindField.prototype.load = async () => {};
     await layer.setContext(context);
     assert.ok(layer.field instanceof WindField);
