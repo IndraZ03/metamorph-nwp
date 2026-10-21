@@ -149,10 +149,14 @@
 </div>
 
 <style>
-  .karhutla-flyout { position: absolute; right: calc(100% + 12px); top: 50%; display: flex; gap: 5px; padding: 7px; border: 1px solid #64748b; border-radius: 12px; background: #172033ee; transform: translate(18px, -50%) scaleX(.85); transform-origin: right center; opacity: 0; visibility: hidden; pointer-events: none; transition: transform 180ms ease, opacity 180ms ease, visibility 180ms; }
+  .karhutla-flyout { position: absolute; right: calc(100% + 12px); top: 50%; display: flex; gap: 6px; padding: 6px; border: 1px solid #64748b; border-radius: 9999px; background: #172033ee; transform: translate(18px, -50%) scaleX(.85); transform-origin: right center; opacity: 0; visibility: hidden; pointer-events: none; transition: transform 180ms ease, opacity 180ms ease, visibility 180ms; }
   .karhutla-flyout.open { transform: translate(0, -50%) scaleX(1); opacity: 1; visibility: visible; pointer-events: auto; }
-  .karhutla-flyout button { color: #fff; font-size: 11px; padding: 9px 7px; border: 1px solid #64748b; border-radius: 7px; cursor: pointer; }
-  .karhutla-flyout button[aria-pressed='true'] { background: #2563eb; border-color: #93c5fd; }
-  @media (max-width: 480px) { .karhutla-flyout { gap: 3px; padding: 5px; right: calc(100% + 7px); } .karhutla-flyout button { padding: 9px 4px; font-size: 10px; } }
-  @media (prefers-reduced-motion: reduce) { .karhutla-flyout { transition: none; } }
+  .karhutla-flyout button { width: 44px; height: 44px; border-radius: 9999px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; padding: 0; color: #fff; font-size: 11px; font-weight: 600; border: 1px solid #64748b; cursor: pointer; transition: background 150ms ease, border-color 150ms ease, transform 150ms ease; }
+  .karhutla-flyout button:hover { border-color: #94a3b8; transform: scale(1.05); }
+  .karhutla-flyout button[aria-pressed='true'] { background: #2563eb; border-color: #93c5fd; box-shadow: 0 0 10px rgba(37, 99, 235, 0.5); }
+  @media (max-width: 480px) {
+    .karhutla-flyout { display: grid; grid-template-columns: repeat(3, 40px); gap: 4px; padding: 5px; border-radius: 20px; right: calc(100% + 7px); box-sizing: border-box; }
+    .karhutla-flyout button { width: 40px; height: 40px; font-size: 10px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .karhutla-flyout, .karhutla-flyout button { transition: none; } }
 </style>

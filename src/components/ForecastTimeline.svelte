@@ -408,7 +408,7 @@
     position: absolute;
     left: 16px;
     right: 16px;
-    bottom: 16px;
+    bottom: calc(var(--meteogram-visible-height, 0px) + 16px);
     z-index: 35;
     display: flex;
     align-items: center;

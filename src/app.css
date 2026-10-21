@@ -44,7 +44,7 @@ html, body, #app {
 
 .nwp-timeline-on .maplibregl-ctrl-bottom-right,
 .nwp-timeline-on .maplibregl-ctrl-bottom-left {
-  bottom: 96px;
+  bottom: calc(var(--meteogram-visible-height, 0px) + 96px);
 }
 
 /* Modern Glassmorphism Range Slider */

@@ -1,7 +1,7 @@
 <script>
   import { legendCss, legendFor } from '../services/nwp.js';
   import { formatWibShort } from '../services/numericTiles.js';
-  import { SPARTAN_CLASSES, spartanRangeLabel } from '../services/spartan.js';
+  import { SPARTAN_CLASSES, spartanDateLabel } from '../services/spartan.js';
 
   let {
     radarData = null,
@@ -84,7 +84,7 @@
         <header class="al-head">
           <div class="al-meta">
             <span class="al-name">KARHUTLA {spartanData.product.code}</span>
-            <span class="al-sub">{spartanRangeLabel(spartanData.startDate, spartanData.endDate)}</span>
+            <span class="al-sub">Run {spartanDateLabel(spartanData.startDate)} · Berlaku {spartanDateLabel(spartanData.endDate)}</span>
           </div>
           <button type="button" class="al-x" onclick={onCloseSpartan} title="Hapus KARHUTLA {spartanData.product.code}" aria-label="Hapus KARHUTLA {spartanData.product.code}">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12" /></svg>

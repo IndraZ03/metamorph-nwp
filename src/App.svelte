@@ -1,5 +1,5 @@
 <script>
-  import { mount, onMount, unmount } from 'svelte';
+  import { mount, onMount, unmount, untrack } from 'svelte';
   import maplibregl from 'maplibre-gl';
   import Toolbar from './components/Toolbar.svelte';
   import ParamToolbar from './components/ParamToolbar.svelte';
@@ -8,6 +8,8 @@
   import UserLayers from './components/UserLayers.svelte';
   import DrawingSidebar from './components/DrawingSidebar.svelte';
   import NwpPopup from './components/NwpPopup.svelte';
+  import MeteogramSheet from './components/MeteogramSheet.svelte';
+  import { fetchMeteogram, meteogramManifestKey } from './services/meteogram.js';
   import { proxyCuaca, proxySatelliteTile, satelliteFrames, verifySatellite } from './services/bmkg.js';
   import {
     ECMWF_POLL_MS,
@@ -138,6 +140,73 @@
   let spartanAbort;
   let spartanTimer;
   let spartanSeekTimer;
+  let spartanRefreshAbort;
+  let spartanAvailableFrames = $state(null);
+  const SPARTAN_POLL_MS = 5 * 60 * 1000;
+
+  async function refreshSpartanLatest() {
+    if (!spartanActive || !mapLoaded || spartanLoading || spartanSeekTimer || spartanRefreshAbort || document.hidden) return;
+    const product = spartanProduct;
+    const request = spartanRequest;
+    const token = spartanToken;
+    const context = timelineContext;
+    const controller = new AbortController();
+    spartanRefreshAbort = controller;
+    try {
+      const start = await findLatestValidSpartanStart(product.id, 5, controller.signal);
+      if (controller.signal.aborted || !spartanActive || product.id !== spartanProduct.id || request !== spartanRequest) return;
+      if (!start) {
+        spartanStatus = 'Data KARHUTLA terbaru belum tersedia. Lapisan terakhir tetap ditampilkan jika ada.';
+        return;
+      }
+      const frames = buildSpartanFrames(start);
+      if (frames[0].startDate <= (spartanFrames[0]?.startDate || '') && spartanData?.product.id === product.id) {
+        if (spartanStatus === 'Gagal memeriksa pembaruan KARHUTLA. Menampilkan data terakhir.' ||
+          spartanStatus === 'Data KARHUTLA terbaru belum tersedia. Lapisan terakhir tetap ditampilkan jika ada.') spartanStatus = '';
+        return;
+      }
+      const followLatest = token === spartanFrames[0]?.token && token === spartanToken &&
+        context === 'spartan' && timelineContext === context && !spartanPlaying && !spartanLoading && !spartanSeekTimer;
+      if (followLatest || !spartanFrames.length) {
+        applySpartan({ product, startDate: frames[0].startDate, endDate: frames[0].endDate, opacity: spartanData?.opacity ?? 0.9 });
+        spartanFrames = frames;
+        spartanToken = frames[0].token;
+        spartanAvailableFrames = null;
+        spartanStatus = '';
+      } else {
+        spartanAvailableFrames = frames;
+      }
+    } catch (error) {
+      if (!controller.signal.aborted && spartanActive && product.id === spartanProduct.id && request === spartanRequest) {
+        spartanStatus = 'Gagal memeriksa pembaruan KARHUTLA. Menampilkan data terakhir.';
+      }
+    } finally {
+      if (spartanRefreshAbort === controller) spartanRefreshAbort = null;
+    }
+  }
+
+  $effect(() => {
+    if (!spartanActive) return;
+    const productId = spartanProduct.id;
+    return untrack(() => {
+      let lastCheck = Date.now();
+      const check = () => {
+        if (productId !== spartanProduct.id || document.hidden || Date.now() - lastCheck < 30000) return;
+        lastCheck = Date.now();
+        void refreshSpartanLatest();
+      };
+      const timer = setInterval(check, SPARTAN_POLL_MS);
+      window.addEventListener('focus', check);
+      document.addEventListener('visibilitychange', check);
+      return () => {
+        clearInterval(timer);
+        window.removeEventListener('focus', check);
+        document.removeEventListener('visibilitychange', check);
+        spartanRefreshAbort?.abort();
+        spartanRefreshAbort = null;
+      };
+    });
+  });
 
   function stopSpartanPlay() {
     clearTimeout(spartanTimer);
@@ -149,12 +218,18 @@
     cancelSatellite();
     timelineContext = context;
   }
-  async function selectSpartan(product, frame = null) {
+  async function selectSpartan(product, frame = null, availableFrames = null) {
     spartanActive = true;
-    selectTimeline('spartan');
-    if (!frame && product.id === spartanProduct.id && spartanData?.product.id === product.id && !spartanLoading) return;
-    if (!frame && spartanFrames.length) frame = spartanFrames.find((f) => f.token === spartanToken) || spartanFrames[0];
+    if (!frame) selectTimeline('spartan');
+    if (!frame && product.id === spartanProduct.id && spartanData?.product.id === product.id && !spartanLoading) {
+      void refreshSpartanLatest();
+      return;
+    }
+    spartanRefreshAbort?.abort();
+    spartanRefreshAbort = null;
+    spartanAvailableFrames = null;
     clearTimeout(spartanSeekTimer);
+    spartanSeekTimer = null;
     spartanAbort?.abort();
     const generation = ++spartanRequest;
     const controller = new AbortController();
@@ -163,7 +238,7 @@
     spartanLoading = true;
     spartanStatus = 'Memuat KARHUTLA…';
     try {
-      let frames = spartanFrames;
+      let frames = availableFrames || spartanFrames;
       if (!frame) {
         const start = await findLatestValidSpartanStart(product.id, 5, controller.signal);
         if (!start) throw new Error('Data KARHUTLA tidak tersedia.');
@@ -172,8 +247,8 @@
       }
       const ok = await verifySpartan({ product: product.id, start: frame.startDate, end: frame.endDate, signal: controller.signal });
       if (generation !== spartanRequest || !spartanActive) return;
-      if (!ok) throw new Error('Interval KARHUTLA tidak tersedia. Lapisan tetap pada interval terakhir.');
-      applySpartan({ product, startDate: frame.startDate, endDate: frame.endDate, rangeDays: 1, opacity: 0.9 });
+      if (!ok) throw new Error('Tanggal prakiraan KARHUTLA tidak tersedia. Lapisan tetap pada tanggal terakhir yang berhasil dimuat.');
+      applySpartan({ product, startDate: frame.startDate, endDate: frame.endDate, opacity: 0.9 });
       spartanFrames = frames;
       spartanToken = frame.token;
       spartanStatus = '';
@@ -222,6 +297,10 @@
       stopSpartanPlay();
       spartanFrames = [];
       spartanToken = null;
+      spartanAvailableFrames = null;
+      spartanRefreshAbort?.abort();
+      spartanRefreshAbort = null;
+      spartanSeekTimer = null;
       spartanStatus = '';
       spartanLoading = false;
       applySpartan(null);
@@ -252,6 +331,15 @@
   let nwpPopupApp = null;
   let nwpHost = null;
   let nwpClickSeq = 0;
+  let meteogramOpen = $state(false);
+  let meteogramSeries = $state(null);
+  let meteogramLoading = $state(false);
+  let meteogramError = $state(null);
+  let meteogramLocation = null;
+  let meteogramRequest = null;
+  let meteogramGeneration = 0;
+  let meteogramSignature = '';
+  let meteogramMarker = null;
   let nwpManifest = $state(null);
   let nwpSteps = $state([]);
   let nwpStepToken = $state(null);
@@ -643,6 +731,7 @@
         windOverlay.destroy();
         windOverlay = null;
       }
+      closeMeteogram();
       m.remove();
     };
   });
@@ -695,6 +784,72 @@
     }
   }
 
+  function closeMeteogram() {
+    meteogramGeneration += 1;
+    meteogramRequest?.abort();
+    meteogramRequest = null;
+    meteogramOpen = false;
+    meteogramLoading = false;
+    meteogramSeries = null;
+    meteogramLocation = null;
+    meteogramSignature = '';
+    meteogramMarker?.remove();
+    meteogramMarker = null;
+    mapContainer?.parentElement?.style.removeProperty('--meteogram-visible-height');
+  }
+
+  async function loadMeteogram() {
+    if (!meteogramLocation || !nwpManifest || !GLOBAL_MODELS.includes(activeModel)) return;
+    meteogramRequest?.abort();
+    const request = new AbortController();
+    const generation = ++meteogramGeneration;
+    meteogramRequest = request;
+    meteogramSignature = meteogramManifestKey(activeModel, nwpManifest);
+    meteogramLoading = true;
+    meteogramError = null;
+    meteogramSeries = null;
+    try {
+      const result = await fetchMeteogram({ modelId: activeModel, manifest: nwpManifest,
+        latitude: meteogramLocation.lat, longitude: meteogramLocation.lon, signal: request.signal });
+      if (request.signal.aborted || generation !== meteogramGeneration) return;
+      meteogramSeries = result;
+    } catch (error) {
+      if (request.signal.aborted || generation !== meteogramGeneration) return;
+      meteogramError = error.message || 'Gagal memuat meteogram';
+    } finally {
+      if (generation === meteogramGeneration) meteogramLoading = false;
+    }
+  }
+
+  function openMeteogram(data) {
+    if (!data || data.modelId !== activeModel || !nwpManifest
+      || data.runId !== modelRunId(activeModel, nwpManifest)) return;
+    meteogramLocation = { lat: data.lat, lon: data.lon };
+    meteogramOpen = true;
+    meteogramMarker?.remove();
+    meteogramMarker = new maplibregl.Marker({ color: '#F08D82' })
+      .setLngLat([data.lon, data.lat]).addTo(map);
+    // Keep popup mounted for focus return; a new map click never opens the sheet itself.
+    loadMeteogram();
+  }
+
+  function selectMeteogramTime(time) {
+    const step = nearestStep(nwpSteps, time);
+    if (!step) return;
+    selectTimeline('nwp');
+    seekNwpStep(step);
+  }
+
+  $effect(() => {
+    const modelId = activeModel;
+    const manifest = nwpManifest;
+    if (!meteogramOpen || !manifest || !GLOBAL_MODELS.includes(modelId)) return;
+    const signature = meteogramManifestKey(modelId, manifest);
+    untrack(() => {
+      if (signature !== meteogramSignature) loadMeteogram();
+    });
+  });
+
   function setNwpPopupProps(lngLat, props) {
     if (!map) return;
     inspectPop.loading = props.loading ?? false;
@@ -702,7 +857,7 @@
     inspectPop.error = props.error ?? null;
     if (!nwpHost) nwpHost = document.createElement('div');
     if (!nwpPopupApp) {
-      nwpPopupApp = mount(NwpPopup, { target: nwpHost });
+      nwpPopupApp = mount(NwpPopup, { target: nwpHost, props: { onMeteogram: openMeteogram } });
     }
     if (!nwpPopup) {
       nwpPopup = new maplibregl.Popup({
@@ -741,6 +896,8 @@
     const base = {
       lat,
       lon: lng,
+      modelId,
+      runId: modelRunId(modelId, manifest),
       modelTitle: spec.title,
       varId: nwpVar,
       runTime: modelRunTime(modelId, manifest),
@@ -873,6 +1030,7 @@
   }
 
   function removeNwpLayer() {
+    closeMeteogram();
     if (!map) return;
     stopNwpPlay();
     closeNwpPopup();
@@ -1772,8 +1930,13 @@
     />
   {/if}
 
-  {#if spartanActive}
-    <div class="karhutla-status" role="status">{spartanStatus}</div>
+  {#if spartanActive && timelineContext === 'spartan'}
+    <div class="karhutla-status" role="status">
+      {spartanStatus || 'Slot tanggal diperiksa saat dipilih; data BMKG belum tentu tersedia.'}
+      {#if spartanAvailableFrames}
+        <button type="button" disabled={spartanLoading} onclick={() => { stopSpartanPlay(); selectSpartan(spartanProduct, spartanAvailableFrames[0], spartanAvailableFrames); }}>Tampilkan data terbaru</button>
+      {/if}
+    </div>
   {/if}
   {#if Number(spartanActive) + Number(GLOBAL_MODELS.includes(activeModel)) + Number(!!satelliteData) > 1}
     <div class="timeline-context" aria-label="Konteks timeline">
@@ -1817,6 +1980,12 @@
   {/if}
 
   {/key}
+
+  {#if meteogramOpen}
+    <MeteogramSheet series={meteogramSeries} loading={meteogramLoading} error={meteogramError}
+      activeTime={nwpSteps.find(step => step.token === nwpStepToken)?.t ?? null}
+      onClose={closeMeteogram} onRetry={loadMeteogram} onSelectTime={selectMeteogramTime}/>
+  {/if}
 
   <!-- Radar Modal -->
   {#if showRadarModal}
@@ -1882,8 +2051,10 @@
 <style>
   .karhutla-status { position: absolute; z-index: 35; top: 88px; left: 16px; right: 88px; max-width: 420px; color: #fff; background: #172033; border-radius: 6px; font-size: 12px; padding: 6px; }
   .karhutla-status:empty { display: none; }
+  .karhutla-status button { display: block; margin-top: 6px; padding: 4px 10px; border: 1px solid #93c5fd; border-radius: 9999px; background: #2563eb; color: #fff; cursor: pointer; }
+  .karhutla-status button:disabled { opacity: 0.5; cursor: wait; }
   .timeline-context button { background: #172033; color: #fff; border: 1px solid #64748b; border-radius: 8px; padding: 8px 10px; font-size: 12px; cursor: pointer; }
   .timeline-context button[aria-pressed='true'] { background: #2563eb; border-color: #93c5fd; }
-  .timeline-context { position: absolute; z-index: 36; bottom: 130px; left: 16px; display: flex; gap: 6px; }
-  @media (max-width: 640px) { .timeline-context { bottom: 180px; } }
+  .timeline-context { position: absolute; z-index: 36; bottom: calc(var(--meteogram-visible-height, 0px) + 130px); left: 16px; display: flex; gap: 6px; }
+  @media (max-width: 640px) { .timeline-context { bottom: calc(var(--meteogram-visible-height, 0px) + 180px); } }
 </style>

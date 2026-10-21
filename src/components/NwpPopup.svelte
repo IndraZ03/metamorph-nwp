@@ -12,6 +12,7 @@
   import { formatWibShort } from '../services/numericTiles.js';
   import { inspectPop } from '../services/inspectPop.svelte.js';
 
+  let { onMeteogram } = $props();
   let data = $derived(inspectPop.data);
   let loading = $derived(inspectPop.loading);
   let error = $derived(inspectPop.error);
@@ -84,6 +85,11 @@
           </div>
         {/each}
       </dl>
+    {/if}
+    {#if onMeteogram}
+      <button class="nwp-pop-meteogram" type="button" onclick={() => onMeteogram(data)}>
+        Meteogram
+      </button>
     {/if}
   {:else if loading}
     <div class="nwp-pop-muted">Membaca nilai…</div>
@@ -193,4 +199,19 @@
   .nwp-pop-err {
     color: #be123c;
   }
+  .nwp-pop-meteogram {
+    display: block;
+    width: 100%;
+    margin-top: 9px;
+    padding: 7px 10px;
+    border: 1px solid #cbd5e1;
+    border-radius: 5px;
+    background: #f1f5f9;
+    color: #0f172a;
+    font-size: 11px;
+    font-weight: 650;
+    cursor: pointer;
+  }
+  .nwp-pop-meteogram:hover { background: #e2e8f0; }
+  .nwp-pop-meteogram:focus-visible { outline: 2px solid #0369a1; outline-offset: 2px; }
 </style>

@@ -297,7 +297,7 @@ export default defineConfig({
 
         // SPARTAN fire-weather tiles (BMKG): /api/proxy-spartan-tile/{z}/{x}/{y}.png?product=fwi&start=YYYYMMDD0000&end=YYYYMMDD0000
         // Upstream pattern verified 2026-10-18: https://spartan.bmkg.go.id/map/rgb_req/spartan/{product}/0/{start}/{end}/{z}/{x}/{y}.png
-        // Tiles are TMS (y origin at south), pre-coloured 4-class raster, aggregated over [start, end], max range 7 days.
+        // TMS raster: start is the fixed model run; end is the selected forecast date.
         const SPARTAN_PRODUCTS = new Set(['ffmc', 'dmc', 'dc', 'isi', 'bui', 'fwi']);
         server.middlewares.use('/api/proxy-spartan-tile', async (req, res) => {
           try {
@@ -327,12 +327,17 @@ export default defineConfig({
             });
             res.statusCode = upstream.status;
             res.setHeader('Content-Type', upstream.headers.get('content-type') || 'image/png');
-            res.setHeader('Cache-Control', 'public, max-age=3600');
+            if (upstream.ok) {
+              res.setHeader('Cache-Control', 'public, max-age=3600');
+            } else {
+              res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+            }
             res.setHeader('Access-Control-Allow-Origin', '*');
             const arrayBuffer = await upstream.arrayBuffer();
             res.end(Buffer.from(arrayBuffer));
           } catch (e) {
             res.statusCode = 502;
+            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
             res.end(String(e));
           }
         });

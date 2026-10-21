@@ -135,29 +135,35 @@ export function numericTileUrl(modelId, manifest, varId, step, z, x, y) {
   return '';
 }
 
-async function pixelAt(url, px, py) {
+export async function readNumericPixel(url, px, py, { signal } = {}) {
+  signal?.throwIfAborted();
   let bmp = _bmpCache.get(url);
   if (!bmp) {
-    const res = await fetch(url, { cache: 'force-cache' });
-    if (!res.ok) return null;
+    const res = await fetch(url, { cache: 'force-cache', signal });
+    if (res.status === 404 || res.status === 204) return null;
+    if (!res.ok) throw new Error(`Numeric tile HTTP ${res.status}`);
     const blob = await res.blob();
-    if (!blob.size || blob.size < 40) return null;
-    try {
-      bmp = await createImageBitmap(blob);
-    } catch {
-      return null;
-    }
-    if (bmp.width < 2 || bmp.height < 2) {
+    signal?.throwIfAborted();
+    if (!blob.size || blob.size < 40) throw new Error('Numeric tile kosong');
+    bmp = await createImageBitmap(blob, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
+    if (signal?.aborted || bmp.width !== TILE || bmp.height !== TILE) {
       bmp.close?.();
-      return null;
+      signal?.throwIfAborted();
+      throw new Error('Ukuran numeric tile tidak valid');
     }
-    if (_bmpCache.size >= BMP_CACHE_MAX) {
-      const first = _bmpCache.keys().next().value;
-      const old = _bmpCache.get(first);
-      _bmpCache.delete(first);
-      old?.close?.();
+    // A concurrent reader may have completed the same tile first.
+    if (_bmpCache.has(url)) {
+      bmp.close?.();
+      bmp = _bmpCache.get(url);
+    } else {
+      if (_bmpCache.size >= BMP_CACHE_MAX) {
+        const first = _bmpCache.keys().next().value;
+        const old = _bmpCache.get(first);
+        _bmpCache.delete(first);
+        old?.close?.();
+      }
+      _bmpCache.set(url, bmp);
     }
-    _bmpCache.set(url, bmp);
   }
   const canvas = document.createElement('canvas');
   canvas.width = 1;
@@ -291,7 +297,7 @@ export async function inspectValues({
       const url = numericTileUrl(modelId, manifest, p.id, step, tile.z, tile.x, tile.y);
       let value = null;
       try {
-        value = url ? await pixelAt(url, tile.px, tile.py) : null;
+        value = url ? await readNumericPixel(url, tile.px, tile.py) : null;
       } catch {
         value = null;
       }
