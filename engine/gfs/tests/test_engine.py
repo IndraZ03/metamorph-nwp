@@ -4,10 +4,12 @@ import os
 import sys
 import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
 
 from engine.gfs import config, render  # noqa: E402
 
@@ -77,6 +79,46 @@ class TestRender(unittest.TestCase):
         rgba = render.colorize(var, vals)
         self.assertEqual(rgba[0, 0, 3], 0)
         self.assertEqual(rgba[0, 1, 3], 255)
+
+
+class TestPublish(unittest.TestCase):
+    def test_partial_chunk_publishes_and_older_run_does_not_overwrite(self):
+        from datetime import datetime, timezone
+        from unittest.mock import patch
+        from engine.gfs import pipeline
+
+        new = datetime(2026, 10, 21, tzinfo=timezone.utc)
+        old = datetime(2026, 10, 17, 12, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as tmp:
+            latest = os.path.join(tmp, "latest.json")
+            with patch.object(config, "LATEST_FILE", latest), \
+                 patch.object(config, "TILE_DIR", os.path.join(tmp, "tiles")), \
+                 patch.object(config, "CHUNK_TIMESTEPS", 1), \
+                 patch.object(pipeline, "_cleanup_old_runs", return_value=[]), \
+                 patch.object(pipeline.source, "download_timestep", return_value={"bytes": 1}), \
+                 patch.object(pipeline.decode, "decode_timestep", return_value={}), \
+                 patch.object(pipeline.render, "render_timestep", return_value={"temperature": 1}), \
+                 patch.object(pipeline.source, "valid_dir_name", return_value="2026102100"), \
+                 patch.object(pipeline.source, "valid_time", return_value=new):
+                pipeline.process_run(new, forecast_list=[0])
+                written = json.loads(Path(latest).read_text(encoding="utf-8"))
+                self.assertEqual(written["run"], "2026-10-21T00:00:00Z")
+                self.assertTrue(any("error" not in row and row.get("valid") for row in written["timesteps"]))
+                pipeline.process_run(old, forecast_list=[0])
+                self.assertEqual(json.loads(Path(latest).read_text(encoding="utf-8"))["run"], "2026-10-21T00:00:00Z")
+
+    def test_empty_manifest_does_not_publish(self):
+        from datetime import datetime, timezone
+        from engine.gfs import pipeline
+
+        with tempfile.TemporaryDirectory() as tmp:
+            latest = os.path.join(tmp, "latest.json")
+            with patch.object(config, "LATEST_FILE", latest):
+                self.assertFalse(pipeline._update_latest(
+                    datetime(2026, 10, 21, tzinfo=timezone.utc),
+                    {"timesteps": [{"forecast_hour": 0, "error": "boom"}]},
+                ))
+                self.assertFalse(os.path.exists(latest))
 
 
 class TestConfig(unittest.TestCase):

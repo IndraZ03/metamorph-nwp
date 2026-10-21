@@ -1,9 +1,13 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import Modal from './Modal.svelte';
   import { fetchSatelliteCatalog, findLatestValidBaserun } from '../services/bmkg.js';
 
   let { currentProduct, currentOpacity = 1.0, onSelect, onClose } = $props();
+
+  let alive = true;
+  let request = new AbortController();
+  onDestroy(() => { alive = false; request.abort(); });
 
   let loading = $state(true);
   let verifying = $state(false);
@@ -24,9 +28,9 @@
     try {
       loading = true;
       const cat = await fetchSatelliteCatalog();
-      sources = cat.sources || [];
+      if (alive) sources = cat.sources || [];
     } catch (e) {
-      error = e.message;
+      if (alive && !request.signal.aborted) error = e.message;
     } finally {
       loading = false;
     }
@@ -34,20 +38,23 @@
 
   async function handleApply() {
     if (!selectedSource) return;
+    const controller = request;
+    const product = selectedSource;
     try {
       verifying = true;
-      const resolved = await findLatestValidBaserun(selectedSource);
+      const resolved = await findLatestValidBaserun(product, controller.signal);
+      if (!alive || controller.signal.aborted || controller !== request) return;
       onSelect({
-        product: selectedSource,
+        product,
         baseruns: resolved.list,
         currentBaserun: resolved.current,
         opacity,
       });
       onClose();
     } catch (e) {
-      error = e.message;
+      if (alive && controller === request && !controller.signal.aborted) error = e.message;
     } finally {
-      verifying = false;
+      if (controller === request) verifying = false;
     }
   }
 
@@ -70,7 +77,7 @@
           type="button"
           class="pick"
           class:on={selectedId === src.id}
-          onclick={() => (selectedId = src.id)}
+          onclick={() => { request.abort(); request = new AbortController(); verifying = false; selectedId = src.id; }}
         >
           {channelLabel(src)}
         </button>

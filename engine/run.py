@@ -8,6 +8,20 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 from . import config
+from .retention import cleanup, keep_step, model_lock, prune_manifest
+from functools import wraps
+
+
+def _retained_run(fn):
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        with model_lock(config.OUTPUT_DIR / ".retention.lock"):
+            cleanup("ecmwf", locked=True)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                cleanup("ecmwf", locked=True)
+    return wrapped
 from .decode import decode_step
 from .fetch import discover_latest_run, discover_via_client, list_index_steps, retrieve_step
 from .manifest import (
@@ -39,16 +53,7 @@ def _parse_run(s: str) -> datetime:
 
 
 def retain_runs() -> None:
-    if not config.RUNS_DIR.exists():
-        return
-    runs = sorted(
-        [p for p in config.RUNS_DIR.iterdir() if p.is_dir()],
-        key=lambda p: p.name,
-        reverse=True,
-    )
-    for old in runs[config.RETAIN_RUNS :]:
-        log.info("drop old run %s", old.name)
-        shutil.rmtree(old, ignore_errors=True)
+    cleanup("ecmwf", locked=True)
 
 
 def _load_run_manifest(run_id: str) -> dict | None:
@@ -96,6 +101,7 @@ def _missing_ids(row: dict, wanted: list[str]) -> list[str]:
     return [vid for vid in wanted if vid not in have]
 
 
+@_retained_run
 def process_run(
     run_time: datetime,
     max_steps: int | None = None,
@@ -115,6 +121,7 @@ def process_run(
         log.warning("no index files for %s", run_id)
         found = probe
 
+    found = [step for step in found if keep_step(run_time, step)]
     existing = _load_run_manifest(run_id) or (
         read_latest() if (read_latest() or {}).get("run_id") == run_id else None
     )
@@ -173,6 +180,8 @@ def process_run(
     write_run_manifest(manifest)
 
     for step in pending:
+        if not keep_step(run_time, step):
+            continue
         need = missing_by_step.get(step, wanted)
         grib_params = _grib_params(need)
         grib = cache_dir / f"{step}.grib2"
@@ -183,6 +192,8 @@ def process_run(
             fields = decode_step(grib)
             if not fields:
                 log.warning("step %s decoded empty", step)
+                continue
+            if not keep_step(run_time, step):
                 continue
             vars_ready = write_step_tiles(run_dir, step, fields, keys=need)
             if not vars_ready:

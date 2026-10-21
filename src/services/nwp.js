@@ -342,21 +342,41 @@ async function getJson(url) {
 export async function fetchLatest(modelId) {
   if (modelId === 'ecmwf') return fetchEcmwfLatest();
   if (modelId === 'gfs') {
-    const latest = await getJson(MODELS.gfs.latestUrl);
-    const runDir = isoToDir(latest.run);
-    const manUrl = latest.manifest || `/api/gfs/runs/${runDir}/manifest.json`;
+    const fallback = {
+      tile_url_template: '/tiles/gfs/{run}/{valid}/{variable}/{z}/{x}/{y}.webp',
+      zoom_min: 0,
+      zoom_max: 6,
+      domain: { lat_min: -11, lat_max: 6, lon_min: 95, lon_max: 141 },
+    };
+    const usable = (man) =>
+      (man?.timesteps || []).some((row) => row && !row.error && row.valid);
     try {
-      const man = await getJson(manUrl);
-      return { ...man, run: man.run || latest.run };
+      const latest = await getJson(MODELS.gfs.latestUrl);
+      const runDir = isoToDir(latest.run);
+      const manUrl = latest.manifest || `/api/gfs/runs/${runDir}/manifest.json`;
+      try {
+        const man = await getJson(manUrl);
+        if (usable(man)) return { ...man, run: man.run || latest.run };
+      } catch {
+        if (usable(latest)) return { ...latest, ...fallback };
+      }
     } catch {
-      return {
-        ...latest,
-        tile_url_template: '/tiles/gfs/{run}/{valid}/{variable}/{z}/{x}/{y}.webp',
-        zoom_min: 0,
-        zoom_max: 6,
-        domain: { lat_min: -11, lat_max: 6, lon_min: 95, lon_max: 141 },
-      };
+      /* pointer missing; scan run dirs below */
     }
+    try {
+      const { runs = [] } = await getJson('/api/gfs/runs');
+      for (const run of runs) {
+        try {
+          const man = await getJson(`/api/gfs/runs/${run}/manifest.json`);
+          if (usable(man)) return { ...man, run: man.run || run };
+        } catch {
+          /* try the next run */
+        }
+      }
+    } catch {
+      /* listing unavailable */
+    }
+    return { timesteps: [], ...fallback };
   }
   if (modelId === 'icon') return getJson(MODELS.icon.latestUrl);
   throw new Error(`unknown model ${modelId}`);

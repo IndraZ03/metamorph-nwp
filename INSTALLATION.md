@@ -29,7 +29,7 @@ Sebelum mulai, pastikan perangkat baru sudah terpasang perangkat lunak berikut:
     - *Svelte for VS Code* (`svelte.svelte-vscode`)
     - *Tailwind CSS IntelliSense* (`bradlc.vscode-tailwindcss`)
     - *ESLint* / *Prettier*
-- **Python 3.9+** (hanya diperlukan bila ingin menjalankan utilitas uji scraper `bmkg-test.py`):
+- **Python 3.10+** (diperlukan untuk engine ECMWF/GFS/ICON, updater otomatis, dan utilitas `bmkg-test.py`; frontend saja tidak memerlukannya):
   - Download: [python.org](https://www.python.org/)
   - Verifikasi: `python --version`
 
@@ -155,3 +155,40 @@ npm install
 ### D. Versi Node.js Tidak Cocok
 Svelte 5 dan Vite 5 membutuhkan Node.js **versi 18.0.0 atau lebih tinggi**.
 Periksa versi Anda dengan `node -v`. Jika versi lebih rendah, lakukan update Node.js via installer resmi atau gunakan Node Version Manager (seperti `nvm-windows` / `fnm`).
+
+## Updater forecast Windows tanpa jendela
+
+Gunakan checkout permanen, bukan worktree agen. Python dan `pythonw.exe` harus berasal dari environment yang sama; jangan gunakan alias WindowsApps. Instal dependensi dari `engine/requirements.txt`, `engine/gfs/requirements.txt`, dan `backend/requirements.txt` pada environment pilihan, termasuk library native ecCodes. Jalankan dari root proyek:
+
+```powershell
+& 'C:\Python314\python.exe' -m engine.hourly --preflight
+& 'C:\Python314\python.exe' -m engine.retention --dry-run
+```
+
+Preflight memeriksa modul dan library ecCodes. Pada environment implementasi Python 3.14 tersedia tetapi dependensi engine belum terpasang; aktivasi task diblokir sampai preflight berhasil. Periksa kompatibilitas wheel/native library sebelum memilih versi Python.
+
+Retensi berlaku untuk **valid_time < UTC sekarang - 15 jam**, bukan umur run. Batas tepat 15 jam dan forecast masa depan tetap disimpan, termasuk run lama. Manifest diperbarui atomik sebelum artefak dihapus. Nama tak dikenal dipertahankan. Dry-run hanya inventaris, tidak mengubah manifest/forecast; file lock dan direktori konfigurasi dapat dibuat. Tinjau inventaris dan konfirmasi cakupan sebelum menjalankan mode nyata.
+
+Setelah persetujuan inventaris, pengujian manual nyata: `& 'C:\Python314\python.exe' -m engine.hourly --once`. Ini melakukan download dan cleanup nyata. Daemon default interval 3600 detik, timeout total per model 21600 detik (6 jam); gunakan `--timeout` lebih besar untuk bake panjang. Model berjalan sebagai subprocess terpisah, tidak overlap antarsiklus. Exit sukses pipeline belum menjamin semua timestep tersedia; periksa status/ready/params pada manifest dan log untuk hasil parsial. Log berotasi: `data/updater/hourly.log`; lock OS dilepas saat proses mati.
+
+Pemasangan (tidak otomatis menjalankan task):
+
+```powershell
+.\install-hourly.ps1 -Python 'C:\Python314\python.exe'
+Get-ScheduledTask -TaskName 'Metamorph-NWP-Hourly'
+Start-ScheduledTask -TaskName 'Metamorph-NWP-Hourly'
+Stop-ScheduledTask -TaskName 'Metamorph-NWP-Hourly'
+.\install-hourly.ps1 -Uninstall
+```
+
+Installer memakai login pengguna saat ini, hak terbatas, `pythonw.exe`, working directory checkout, IgnoreNew, retry crash, tanpa batas durasi task. Task tak dikenal tidak ditimpa; task managed harus dihapus eksplisit sebelum reinstall. Stop task menghentikan daemon; penghentian paksa Task Scheduler belum diverifikasi untuk seluruh child process. Periksa proses Python milik updater sebelum restart; jangan menghentikan proses Python lain. Timeout normal membunuh dan menunggu child yang dimiliki runner. Lock dilepas OS saat pemilik mati. PC mati/sleep berarti tidak ada pembaruan; setelah bangun daemon melanjutkan tanpa mengejar jadwal tertinggal. Pemeriksaan tiap jam tidak menjamin provider menerbitkan run tiap jam. Task native Windows telah dipasang pada checkout ini; status runtime harus tetap diperiksa, bukan diasumsikan dari konfigurasi task.
+
+### Pemeriksaan kebaruan otomatis
+
+```powershell
+& '.\engine\.venv\Scripts\python.exe' -m engine.health --check --json
+```
+
+Perintah ini read-only: membandingkan run lokal dengan run terbaru yang terkonfirmasi pada penyedia dan memeriksa parameter serta keberadaan sampel artefak visual/numeric. Bukan pemeriksaan integritas seluruh tile atau jaminan seluruh horizon upstream sudah dipublikasikan. Exit 0 hanya jika semua model `healthy`; jaringan gagal menghasilkan `unknown`, bukan sukses. Updater menyimpan hasil sebelum/sesudah siklus pada `data/updater/status.json`, termasuk `checked_at` dan `last_verified_at`. Status tersebut snapshot, bukan heartbeat real-time; periksa umurnya. Siklus gagal dicoba kembali setelah maksimal 5 menit menunggu, tanpa menumpuk worker. Bake panjang tetap dibatasi timeout total 6 jam.
+
+TLS Windows menggunakan `truststore` dan certificate store OS. Verifikasi sertifikat tetap aktif; jangan gunakan `verify=False`. Semua eksekusi menggunakan Python native, tidak membutuhkan WSL.

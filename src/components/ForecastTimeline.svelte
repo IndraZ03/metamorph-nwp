@@ -3,6 +3,8 @@
   import { CalendarDays, ChevronLeft, ChevronRight, Pause, Play } from 'lucide-svelte';
 
   let {
+    daily = false,
+    observation = false,
     steps = [],
     selectedToken = null,
     playing = false,
@@ -142,9 +144,9 @@
     else if (pxPerHour >= 36) majorH = 3;
     else if (pxPerHour >= 18) majorH = 6;
     else if (pxPerHour >= 9) majorH = 12;
-    const majorMs = majorH * 3600000;
-    const mediumMs = majorH <= 3 ? 3600000 : majorMs / 2;
-    const minorMs = pxPerHour >= 22 ? 3600000 : mediumMs;
+    const majorMs = observation && hours <= 4 ? (width / (hours * 6) >= 60 ? 600000 : 1800000) : majorH * 3600000;
+    const mediumMs = observation && hours <= 4 ? majorMs : majorH <= 3 ? 3600000 : majorMs / 2;
+    const minorMs = observation && hours <= 4 ? 600000 : pxPerHour >= 22 ? 3600000 : mediumMs;
     const out = [];
     const seen = new Set();
     const push = (t, kind) => {
@@ -167,9 +169,9 @@
             : '',
       });
     };
-    for (let t = alignWib(start, minorMs); t <= end + minorMs; t += minorMs) push(t, 'minor');
-    for (let t = alignWib(start, mediumMs); t <= end + mediumMs; t += mediumMs) push(t, 'medium');
     for (let t = alignWib(start, majorMs); t <= end + majorMs; t += majorMs) push(t, 'major');
+    for (let t = alignWib(start, mediumMs); t <= end + mediumMs; t += mediumMs) push(t, 'medium');
+    for (let t = alignWib(start, minorMs); t <= end + minorMs; t += minorMs) push(t, 'minor');
     out.sort((a, b) => a.t - b.t || rank(b.kind) - rank(a.kind));
     const majors = out.filter((x) => x.kind === 'major' && x.label);
     let lastX = -999;
@@ -286,7 +288,7 @@
   class:ft-reduced={reducedMotion}
   tabindex="0"
   role="slider"
-  aria-label="Timeline prakiraan"
+  aria-label={observation ? 'Timeline satelit' : 'Timeline prakiraan'}
   aria-valuemin={0}
   aria-valuemax={Math.max(0, steps.length - 1)}
   aria-valuenow={Math.max(0, steps.findIndex((s) => s.token === selectedToken))}
@@ -295,12 +297,17 @@
   <div class="ft-meta">
     <div class="ft-model">{modelTitle || 'NWP'}</div>
     <div class="ft-times">
-      <span>Run {wibShort(runTime)}</span>
-      <span>Valid {selected ? wibShort(selected.t) : '—'}</span>
+      {#if daily}
+        <span>Agregasi harian · WIB</span>
+        <span>Interval {selected?.label || '—'}</span>
+      {:else}
+        {#if !observation}<span>Run {wibShort(runTime)}</span>{/if}
+        <span>{observation ? 'Citra' : 'Valid'} {selected ? wibShort(selected.t) : '—'}{observation ? ' WIB' : ''}</span>
+      {/if}
     </div>
   </div>
   <div class="ft-controls">
-    <button type="button" class="ft-btn" title="Sebelumnya" aria-label="Sebelumnya" onclick={() => onPrev?.()} disabled={disabled}>
+    <button type="button" class="ft-btn" title="Sebelumnya" aria-label="Sebelumnya" onclick={() => onPrev?.()} disabled={disabled || steps.length < 2}>
       <ChevronLeft size={18} strokeWidth={2.2} />
     </button>
     <button
@@ -310,7 +317,7 @@
       title={playing ? 'Jeda' : 'Putar'}
       aria-label={playing ? 'Jeda' : 'Putar'}
       onclick={() => (playing ? onPause?.() : onPlay?.())}
-      disabled={disabled}
+      disabled={disabled || steps.length < 2}
     >
       {#if playing}
         <Pause size={16} strokeWidth={2.4} />
@@ -370,13 +377,13 @@
         <span class="ft-dot" style="left: {((s.t - t0) / span) * 100}%"></span>
       {/each}
       <div class="ft-head" style="left: {headPct}%" class:drag={dragging}>
-        <div class="ft-tip">{hoverStep ? wibFullLabel(hoverStep.t) : ''}</div>
+        <div class="ft-tip">{hoverStep ? (daily ? `${hoverStep.label} WIB` : wibFullLabel(hoverStep.t)) : ''}</div>
         <span class="ft-knob"></span>
       </div>
     </div>
   </div>
 
-  <button type="button" class="ft-btn" title="Berikutnya" aria-label="Berikutnya" onclick={() => onNext?.()} disabled={disabled}>
+  <button type="button" class="ft-btn" title="Berikutnya" aria-label="Berikutnya" onclick={() => onNext?.()} disabled={disabled || steps.length < 2}>
     <ChevronRight size={18} strokeWidth={2.2} />
   </button>
   <button
@@ -387,7 +394,7 @@
     aria-label="Loop"
     aria-pressed={loop}
     onclick={() => onLoop?.(!loop)}
-    disabled={disabled}
+    disabled={disabled || steps.length < 2}
   >
     <span class="ft-switch" class:on={loop} aria-hidden="true">
       <span class="ft-switch-knob"></span>

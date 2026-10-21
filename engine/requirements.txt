@@ -4,3 +4,4 @@ xarray
 numpy
 pillow
 mercantile
+truststore>=0.10.0; sys_platform == "win32"

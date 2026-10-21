@@ -1,6 +1,7 @@
 import bz2
 import io
 import urllib.request
+from engine.network import ssl_context
 import numpy as np
 from pathlib import Path
 from scipy.spatial import cKDTree
@@ -23,7 +24,7 @@ def fetch_invariant_coord(var_name, cycle="00"):
     """Fetch CLAT or CLON from DWD Open Data."""
     url = f"{DWD_BASE_URL}/{cycle}/{var_name.lower()}/"
     req = urllib.request.Request(url, headers={"User-Agent": "metamorph-nwp/1.0"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, context=ssl_context(), timeout=30) as resp:
         html = resp.read().decode("utf-8")
 
     import re
@@ -34,7 +35,7 @@ def fetch_invariant_coord(var_name, cycle="00"):
     file_url = f"{url}{match.group(1)}"
     print(f"Downloading invariant grid: {file_url}")
     file_req = urllib.request.Request(file_url, headers={"User-Agent": "metamorph-nwp/1.0"})
-    with urllib.request.urlopen(file_req, timeout=60) as resp:
+    with urllib.request.urlopen(file_req, context=ssl_context(), timeout=60) as resp:
         compressed = resp.read()
 
     raw = bz2.decompress(compressed)

@@ -7,6 +7,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from . import config
+from .network import ssl_context
 
 log = logging.getLogger("ecmwf.fetch")
 
@@ -34,7 +35,7 @@ _UA = {"User-Agent": "metamorph-nwp-ecmwf-engine/0.1"}
 def head_ok(url: str, timeout: int = 20) -> bool:
     req = Request(url, method="HEAD", headers=_UA)
     try:
-        with urlopen(req, timeout=timeout) as resp:
+        with urlopen(req, context=ssl_context(), timeout=timeout) as resp:
             return 200 <= resp.status < 400
     except HTTPError as e:
         if e.code in (403, 405):
@@ -47,7 +48,7 @@ def head_ok(url: str, timeout: int = 20) -> bool:
 def get_ok(url: str, timeout: int = 20) -> bool:
     req = Request(url, method="GET", headers=_UA)
     try:
-        with urlopen(req, timeout=timeout) as resp:
+        with urlopen(req, context=ssl_context(), timeout=timeout) as resp:
             return 200 <= resp.status < 400
     except (HTTPError, URLError, TimeoutError, OSError):
         return False

@@ -1,8 +1,8 @@
-import { join } from 'path';
-import { skeleton } from '@skeletonlabs/tw-plugin';
+const { join } = require('path');
+const { skeleton } = require('@skeletonlabs/tw-plugin');
 
 /** @type {import('tailwindcss').Config} */
-export default {
+module.exports = {
   darkMode: 'class',
   content: [
     './index.html',

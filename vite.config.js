@@ -347,5 +347,8 @@ export default defineConfig({
   server: {
     port: 5173,
     host: true,
+    watch: {
+      ignored: ['**/data/**', '**/engine/output/**', '**/engine/.venv/**', '**/.claude/**'],
+    },
   },
 });

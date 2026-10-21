@@ -1,4 +1,18 @@
 import time
+from functools import wraps
+from engine.retention import cleanup, keep_step, layouts, model_lock
+
+
+def _retained_run(fn):
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        with model_lock(layouts("icon")[2]):
+            cleanup("icon", locked=True)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                cleanup("icon", locked=True)
+    return wrapped
 from typing import Dict, List, Optional
 
 from .config import PARAMETERS, POLL_INTERVAL_SECONDS
@@ -29,6 +43,8 @@ def process_step_parameter(
     manifest_mgr: Optional[ManifestManager] = None,
 ) -> bool:
     """Download, process, tile and record a single parameter at a timestep."""
+    if not keep_step(run_meta["run_time_iso"], step_int):
+        return False
     res = download_step_grib(run_meta, param_key, step_int)
     if not res:
         return False
@@ -36,6 +52,8 @@ def process_step_parameter(
     raw_grib, step_info = res
     grid_2d, _ = process_grib_to_grid(raw_grib, param_key)
 
+    if not keep_step(run_meta["run_time_iso"], step_int):
+        return False
     # Save 2D grid for sub-millisecond point queries
     save_grid_to_disk(grid_2d, run_meta["run_id"], param_key, step_info["step_str"])
 
@@ -83,6 +101,7 @@ def process_full_step(
     return success_count
 
 
+@_retained_run
 def process_run(
     run_meta: Dict,
     max_steps: Optional[int] = None,
@@ -106,6 +125,8 @@ def process_run(
     wanted = params if params is not None else list(PARAMETERS.keys())
 
     for i, step in enumerate(timesteps):
+        if not keep_step(run_meta["run_time_iso"], step):
+            continue
         existing = next(
             (s for s in manifest_mgr.data.get("timesteps", []) if s.get("step") == step),
             None,
@@ -140,12 +161,7 @@ def run_poller_daemon(poll_interval: int = POLL_INTERVAL_SECONDS, max_steps: Opt
             latest_run = find_latest_active_run()
             if latest_run:
                 run_id = latest_run["run_id"]
-                if run_id != last_processed_run:
-                    print(f"New ICON run detected: {run_id} ({latest_run['count']} steps)")
-                    process_run(latest_run, max_steps=max_steps)
-                    last_processed_run = run_id
-                else:
-                    print(f"Run {run_id} already up-to-date.")
+                process_run(latest_run, max_steps=max_steps)
             else:
                 print("No active ICON run found on DWD.")
         except Exception as e:

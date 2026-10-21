@@ -65,37 +65,29 @@ export function generateBaseruns(count = 12, stepMinutes = 10, lagMinutes = 20) 
 /**
  * Test candidate baseruns against the BMKG tile service to find the latest valid 200 OK timestamp
  */
-export async function findLatestValidBaserun(product) {
+export function satelliteFrames(tokens = []) {
+  return [...new Set(tokens)].filter(token => typeof token === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(token) && Number.isFinite(Date.parse(token)))
+    .map(token => ({ token, t: Date.parse(token) })).sort((a, b) => a.t - b.t);
+}
+export async function verifySatellite(product, token, signal) {
+  signal?.throwIfAborted();
   const template = product.url || product.tile_url;
+  if (!template || !satelliteFrames([token]).length) return false;
+  const url = proxySatelliteTile(template, token).replace('{z}', '4').replace('{x}', '13').replace('{-y}', '7').replace('{y}', '7');
+  const response = await fetch(url, { method: 'HEAD', signal });
+  signal?.throwIfAborted();
+  return response.ok;
+}
+export async function findLatestValidBaserun(product, signal) {
   const candidates = generateBaseruns(12, product.step_minutes || 10, 10);
-
-  if (!template) {
-    return {
-      current: candidates[1] || candidates[0],
-      list: candidates.slice(1),
-    };
-  }
-
-  // Test sample tile at Indonesia (z=4, x=13, y=7)
-  for (const br of candidates) {
-    const samplePath = `/api/proxy-satellite-tile/4/13/7.png?tiletype=himawari9&modelname=${product.modelname || (product.param === 'VS' ? 'himawari9hires' : 'himawari9')}&param=${product.param}&baserun=${encodeURIComponent(br)}`;
+  const list = [];
+  for (const token of candidates) {
     try {
-      const res = await fetch(samplePath, { method: 'HEAD' });
-      if (res.ok) {
-        const validIndex = candidates.indexOf(br);
-        return {
-          current: br,
-          list: candidates.slice(validIndex),
-        };
-      }
-    } catch {
-      // Continue to next timestamp
+      if (await verifySatellite(product, token, signal)) list.push(token);
+    } catch (error) {
+      if (signal?.aborted || error.name === 'AbortError') throw error;
     }
   }
-
-  // Fallback if test fails
-  return {
-    current: candidates[1] || candidates[0],
-    list: candidates.slice(1),
-  };
+  if (!list.length) throw new Error('Data satelit tidak tersedia.');
+  return { current: list[0], list };
 }

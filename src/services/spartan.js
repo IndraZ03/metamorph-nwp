@@ -137,9 +137,9 @@ function spartanSampleTileUrl({ product, start, end }) {
 }
 
 /** Cek satu kombinasi produk + rentang benar-benar tersedia (HTTP 200). */
-export async function verifySpartan({ product, start, end }) {
+export async function verifySpartan({ product, start, end, signal }) {
   try {
-    const res = await fetch(spartanSampleTileUrl({ product, start, end }));
+    const res = await fetch(spartanSampleTileUrl({ product, start, end }), { signal });
     return res.ok;
   } catch {
     return false;
@@ -149,18 +149,29 @@ export async function verifySpartan({ product, start, end }) {
 /**
  * Cari tanggal mulai terbaru yang datanya tersedia, mundur dari kemarin (WIB).
  * SPARTAN terbit dengan lag ~1 hari, jadi kemarin adalah kandidat pertama.
- * Mengembalikan Date; fallback kemarin bila semua kandidat gagal (modal akan
- * menampilkan error verifikasi).
+ * Mengembalikan Date untuk interval harian terverifikasi, atau null bila tidak tersedia.
  */
-export async function findLatestValidSpartanStart(product = 'dmc', daysBack = 5) {
+export async function findLatestValidSpartanStart(product = 'fwi', daysBack = 5, signal) {
   const base = addDays(todayWIB(), -1);
   for (let i = 0; i < daysBack; i++) {
     const start = addDays(base, -i);
     const startStr = formatSpartanDate(start);
-    const endStr = formatSpartanDate(addDays(start, SPARTAN_MAX_RANGE_DAYS));
-    if (await verifySpartan({ product, start: startStr, end: endStr })) {
+    if (signal?.aborted) return null;
+    const endStr = formatSpartanDate(addDays(start, 1));
+    if (await verifySpartan({ product, start: startStr, end: endStr, signal })) {
       return start;
     }
   }
-  return base;
+  return null;
+}
+
+/** Seven daily aggregation intervals; timestamps explicitly denote midnight WIB. */
+export function buildSpartanFrames(start) {
+  return Array.from({ length: 7 }, (_, i) => {
+    const startDate = formatSpartanDate(addDays(start, i));
+    const endDate = formatSpartanDate(addDays(start, i + 1));
+    return { token: startDate, startDate, endDate,
+      t: Date.UTC(+startDate.slice(0, 4), +startDate.slice(4, 6) - 1, +startDate.slice(6, 8)) - 7 * 3600000,
+      label: spartanRangeLabel(startDate, endDate) };
+  });
 }

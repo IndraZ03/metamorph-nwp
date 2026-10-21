@@ -1,10 +1,13 @@
 <script>
+  import { SPARTAN_PRODUCTS } from '../services/spartan.js';
   let {
     activeModel = null,
     radarActive = false,
     satelliteActive = false,
     drawingActive = false,
     spartanActive = false,
+    spartanProduct = 'fwi',
+    onSelectSpartan,
     onOpenRadar,
     onOpenSatellite,
     onOpenSpartan,
@@ -12,10 +15,12 @@
     onToggleDrawing,
   } = $props();
 
+  let spartanMenuOpen = $state(false);
+
   const BUTTONS = [
     { id: 'radar', label: 'Radar', icon: 'radar', active: () => radarActive, enabled: true },
     { id: 'satelit', label: 'Satelit', icon: 'satellite', active: () => satelliteActive, enabled: true },
-    { id: 'spartan', label: 'SPARTAN', icon: 'spartan', active: () => spartanActive, enabled: true },
+    { id: 'spartan', label: 'KARHUTLA', icon: 'spartan', active: () => spartanActive, enabled: true },
     { id: 'ecmwf', label: 'ECMWF', icon: 'ecmwf', active: () => activeModel === 'ecmwf', enabled: true },
     { id: 'gfs', label: 'GFS', icon: 'gfs', active: () => activeModel === 'gfs', enabled: true },
     { id: 'icon', label: 'ICON', icon: 'icon', active: () => activeModel === 'icon', enabled: true },
@@ -31,7 +36,7 @@
     } else if (btn.id === 'satelit') {
       onOpenSatellite();
     } else if (btn.id === 'spartan') {
-      onOpenSpartan();
+      spartanMenuOpen = !spartanMenuOpen;
     } else {
       onSelectModel?.(btn.id);
     }
@@ -69,6 +74,13 @@
   {#each BUTTONS as btn}
     {@const isActive = btn.active()}
     <div class="relative group">
+      {#if btn.id === 'spartan'}
+        <div class="karhutla-flyout" class:open={spartanMenuOpen} inert={!spartanMenuOpen} aria-label="Produk KARHUTLA">
+          {#each SPARTAN_PRODUCTS as product}
+            <button type="button" aria-pressed={spartanProduct === product.id} title={product.name} onclick={() => onSelectSpartan?.(product)}>{product.code}</button>
+          {/each}
+        </div>
+      {/if}
       <button
         type="button"
         onclick={() => handleClick(btn)}
@@ -116,6 +128,7 @@
       </button>
 
       <!-- Tooltip on Left -->
+      {#if btn.id !== 'spartan' || !spartanActive}
       <div
         class="absolute right-full top-1/2 -translate-y-1/2 mr-3 px-3 py-1.5 rounded-xl bg-slate-900/90 backdrop-blur-md text-xs font-medium text-white whitespace-nowrap shadow-2xl border border-white/10 opacity-0 pointer-events-none group-hover:opacity-100 transition-all duration-150 flex items-center gap-1.5 z-50"
       >
@@ -124,6 +137,16 @@
           <span class="text-[9px] px-1.5 py-0.2 rounded bg-white/10 text-slate-400 font-normal">segera</span>
         {/if}
       </div>
+      {/if}
     </div>
   {/each}
 </div>
+
+<style>
+  .karhutla-flyout { position: absolute; right: calc(100% + 12px); top: 50%; display: flex; gap: 5px; padding: 7px; border: 1px solid #64748b; border-radius: 12px; background: #172033ee; transform: translate(18px, -50%) scaleX(.85); transform-origin: right center; opacity: 0; visibility: hidden; pointer-events: none; transition: transform 180ms ease, opacity 180ms ease, visibility 180ms; }
+  .karhutla-flyout.open { transform: translate(0, -50%) scaleX(1); opacity: 1; visibility: visible; pointer-events: auto; }
+  .karhutla-flyout button { color: #fff; font-size: 11px; padding: 9px 7px; border: 1px solid #64748b; border-radius: 7px; cursor: pointer; }
+  .karhutla-flyout button[aria-pressed='true'] { background: #2563eb; border-color: #93c5fd; }
+  @media (max-width: 480px) { .karhutla-flyout { gap: 3px; padding: 5px; right: calc(100% + 7px); } .karhutla-flyout button { padding: 9px 4px; font-size: 10px; } }
+  @media (prefers-reduced-motion: reduce) { .karhutla-flyout { transition: none; } }
+</style>

@@ -1,6 +1,7 @@
 import bz2
 import re
 import urllib.request
+from engine.network import ssl_context
 import eccodes
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
@@ -13,7 +14,7 @@ def list_available_runs() -> List[str]:
     url = f"{DWD_BASE_URL}/"
     req = urllib.request.Request(url, headers={"User-Agent": "metamorph-nwp/1.0"})
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, context=ssl_context(), timeout=10) as resp:
             html = resp.read().decode("utf-8")
         dirs = re.findall(r'href=["\']([0-9]{2})/["\']', html)
         return sorted(list(set(dirs)))
@@ -38,7 +39,7 @@ def get_latest_run_metadata(cycle: str = "00") -> Optional[Dict]:
     url = f"{DWD_BASE_URL}/{cycle}/t_2m/"
     req = urllib.request.Request(url, headers={"User-Agent": "metamorph-nwp/1.0"})
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, context=ssl_context(), timeout=15) as resp:
             html = resp.read().decode("utf-8")
 
         pattern = r'href=["\'](icon_global_icosahedral_single-level_([0-9]{8})' + cycle + r'_([0-9]{3})_T_2M\.grib2\.bz2)["\']'
@@ -106,7 +107,7 @@ def download_step_grib(run_meta: Dict, param_key: str, step_int: int) -> Optiona
 
     req = urllib.request.Request(url, headers={"User-Agent": "metamorph-nwp/1.0"})
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, context=ssl_context(), timeout=30) as resp:
             compressed = resp.read()
 
         raw = bz2.decompress(compressed)

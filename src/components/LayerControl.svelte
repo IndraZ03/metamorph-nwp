@@ -12,7 +12,6 @@
     onCloseSatellite,
     onCloseNwp,
     onCloseSpartan,
-    onChangeSatelliteBaserun,
   } = $props();
 
   function nwpLegend() {
@@ -70,26 +69,13 @@
         <header class="al-head">
           <div class="al-meta">
             <span class="al-name">{satelliteData.product.label}</span>
-            <span class="al-sub">{satelliteData.currentBaserun}</span>
+            <span class="al-sub">{formatWibShort(satelliteData.currentBaserun)} WIB</span>
           </div>
           <button type="button" class="al-x" onclick={onCloseSatellite} title="Tutup satelit" aria-label="Tutup satelit">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
           </button>
         </header>
-        {#if satelliteData.baseruns?.length}
-          <div class="al-frames">
-            {#each satelliteData.baseruns.slice(0, 6) as br}
-              <button
-                type="button"
-                class="al-frame"
-                class:on={satelliteData.currentBaserun === br}
-                onclick={() => onChangeSatelliteBaserun(br)}
-              >
-                {satTime(br)}
-              </button>
-            {/each}
-          </div>
-        {/if}
+  
       </section>
     {/if}
 
@@ -97,17 +83,19 @@
       <section class="al-row">
         <header class="al-head">
           <div class="al-meta">
-            <span class="al-name">SPARTAN {spartanData.product.code}</span>
+            <span class="al-name">KARHUTLA {spartanData.product.code}</span>
             <span class="al-sub">{spartanRangeLabel(spartanData.startDate, spartanData.endDate)}</span>
           </div>
-          <button type="button" class="al-x" onclick={onCloseSpartan} aria-label="Tutup SPARTAN">×</button>
+          <button type="button" class="al-x" onclick={onCloseSpartan} title="Hapus KARHUTLA {spartanData.product.code}" aria-label="Hapus KARHUTLA {spartanData.product.code}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
+          </button>
         </header>
         <div class="al-bar" title="Bahaya Kebakaran">
           {#each SPARTAN_CLASSES as cls}
             <i style="background:{cls.color}" title={cls.label}></i>
           {/each}
         </div>
-        <div class="al-scale"><span>Rendah</span><span>Bahaya Kebakaran</span><span>Ekstrem</span></div>
+        <div class="al-scale">{#each SPARTAN_CLASSES as cls}<span>{cls.label}</span>{/each}</div>
       </section>
     {/if}
 
@@ -226,32 +214,5 @@
     font-size: 9px;
     color: rgba(244, 244, 245, 0.45);
     font-variant-numeric: tabular-nums;
-  }
-  .al-frames {
-    display: flex;
-    gap: 4px;
-    margin-top: 8px;
-    overflow-x: auto;
-  }
-  .al-frame {
-    flex: 1;
-    min-width: 0;
-    padding: 3px 0;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
-    background: transparent;
-    color: rgba(244, 244, 245, 0.7);
-    font-size: 10px;
-    font-variant-numeric: tabular-nums;
-    cursor: pointer;
-  }
-  .al-frame:hover {
-    color: #fff;
-    border-color: rgba(255, 255, 255, 0.22);
-  }
-  .al-frame.on {
-    color: #fff;
-    background: rgba(255, 255, 255, 0.12);
-    border-color: rgba(255, 255, 255, 0.22);
   }
 </style>

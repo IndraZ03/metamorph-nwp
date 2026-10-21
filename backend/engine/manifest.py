@@ -1,5 +1,6 @@
 import json
 import shutil
+from engine.retention import atomic_write_json, cleanup, prune_manifest
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -124,12 +125,15 @@ class ManifestManager:
         self.save()
 
     def save(self):
-        with open(self.manifest_path, "w", encoding="utf-8") as f:
-            json.dump(self.data, f, indent=2)
-
-        # Update global latest pointer
-        with open(get_global_manifest_path(), "w", encoding="utf-8") as f:
-            json.dump(self.data, f, indent=2)
+        prune_manifest(self.data)
+        atomic_write_json(self.manifest_path, self.data)
+        latest = get_global_manifest_path()
+        try:
+            current = json.loads(latest.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            current = {}
+        if current.get("run_id", "") <= self.run_id:
+            atomic_write_json(latest, self.data)
 
 
 def list_saved_runs() -> List[str]:
@@ -147,12 +151,4 @@ def list_saved_runs() -> List[str]:
 
 def prune_old_runs(keep: int = RETENTION_RUNS):
     """Prune runs older than the newest `keep` runs to bound disk usage."""
-    runs = list_saved_runs()
-    if len(runs) <= keep:
-        return
-
-    to_delete = runs[keep:]
-    for r in to_delete:
-        p = TILES_DIR / r
-        print(f"Pruning old run directory: {p}")
-        shutil.rmtree(p, ignore_errors=True)
+    return cleanup("icon", locked=True)

@@ -40,8 +40,8 @@ def main(argv: list[str] | None = None) -> int:
     p_srv = sub.add_parser("serve", help="start the tile server")
     p_srv.add_argument("--port", type=int, default=8080)
     p_srv.add_argument("--host", default="0.0.0.0")
-    p_cl = sub.add_parser("cleanup", help="delete old runs, keep N newest")
-    p_cl.add_argument("--keep", type=int, default=2)
+    p_cl = sub.add_parser("cleanup", help="delete timesteps older than 15 valid-time hours")
+    p_cl.add_argument("--keep", type=int, default=2, help="deprecated; ignored (valid-time retention)")
 
     args = ap.parse_args(argv)
     if args.cmd == "all":
@@ -63,7 +63,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "serve":
         server.serve(port=args.port, host=args.host)
     elif args.cmd == "cleanup":
-        print("removed:", pipeline._cleanup_old_runs(keep=args.keep))
+        with pipeline._lock():
+            print("removed:", pipeline._cleanup_old_runs(keep=args.keep))
     return 0
 
 

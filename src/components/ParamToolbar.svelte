@@ -11,6 +11,8 @@
     windStatus = { state: 'ready', mode: 'unavailable', message: 'Data U/V belum dimuat' },
     onToggleWind,
     onChangeWindSpeed,
+    extent = 'full',
+    onSetExtent,
   } = $props();
 
   function isReady(id) {
@@ -19,6 +21,31 @@
 </script>
 
 <div class="fixed left-5 top-1/2 -translate-y-1/2 z-40 flex flex-col items-center gap-2.5">
+  <div
+    class="flex flex-col gap-1 p-1 rounded-lg border border-white/20 bg-white/10 backdrop-blur-md"
+    role="radiogroup"
+    aria-label="Cakupan layer"
+  >
+    <button
+      type="button"
+      role="radio"
+      aria-checked={extent === 'land'}
+      onclick={() => onSetExtent?.('land')}
+      class="px-2 py-1 rounded text-[9px] font-semibold leading-tight whitespace-nowrap transition-colors {
+        extent === 'land' ? 'bg-[#2563EB] text-white' : 'text-white/80 hover:bg-white/10'
+      }"
+    >Daratan</button>
+    <button
+      type="button"
+      role="radio"
+      aria-checked={extent === 'full'}
+      onclick={() => onSetExtent?.('full')}
+      class="px-2 py-1 rounded text-[9px] font-semibold leading-tight whitespace-nowrap transition-colors {
+        extent === 'full' ? 'bg-[#2563EB] text-white' : 'text-white/80 hover:bg-white/10'
+      }"
+    >Laut & Daratan</button>
+  </div>
+
   <div class="relative group flex flex-col items-center">
     <div
       class="flex flex-col items-center gap-1.5 px-2 py-1.5 rounded-lg border backdrop-blur-md {

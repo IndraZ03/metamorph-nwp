@@ -17,11 +17,10 @@
     satelliteData = null,
     nwpData = null,
     spartanData = null,
-    onCloseSpartan,
     onCloseRadar,
     onCloseSatellite,
     onCloseNwp,
-    onChangeSatelliteBaserun,
+    onCloseSpartan,
   } = $props();
 
   let showPanel = $state(false);
@@ -104,11 +103,10 @@
     {satelliteData}
     {nwpData}
     {spartanData}
-    {onCloseSpartan}
     {onCloseRadar}
     {onCloseSatellite}
     {onCloseNwp}
-    {onChangeSatelliteBaserun}
+    {onCloseSpartan}
   />
   <div class="relative group shrink-0">
     <button

@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from . import config, decode, render, source
+from engine.retention import atomic_write_json, cleanup, keep_step, model_lock, prune_manifest
 
 
 # ---------------------------------------------------------------- helpers
@@ -28,16 +29,12 @@ def _fmt(dt: datetime) -> str:
 
 @contextmanager
 def _lock():
-    os.makedirs(os.path.dirname(config.LOCK_FILE), exist_ok=True)
-    if os.path.exists(config.LOCK_FILE):
-        raise RuntimeError(f"pipeline already running (lock exists: {config.LOCK_FILE})")
-    with open(config.LOCK_FILE, "w") as fh:
-        fh.write(str(os.getpid()))
-    try:
-        yield
-    finally:
-        if os.path.exists(config.LOCK_FILE):
-            os.remove(config.LOCK_FILE)
+    with model_lock(config.LOCK_FILE):
+        cleanup("gfs", locked=True)
+        try:
+            yield
+        finally:
+            cleanup("gfs", locked=True)
 
 
 def _run_dir(run: datetime) -> str:
@@ -98,10 +95,10 @@ def _is_complete(run: datetime, expected: int) -> bool:
     try:
         with open(path) as fh:
             man = json.load(fh)
-        ts = man.get("timesteps", [])
+        ts = prune_manifest(man).get("timesteps", [])
         return (
             man.get("status") == "complete"
-            and len(ts) == expected
+            and ({int(t['forecast_hour']) for t in ts} == set(expected) if not isinstance(expected, int) else len(ts) == expected)
             and all("error" not in t for t in ts)
         )
     except Exception:
@@ -147,37 +144,48 @@ def _write_manifest(run: datetime, timesteps: list[dict], status: str) -> dict:
     }
     path = _manifest_path(run)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as fh:
-        json.dump(man, fh, indent=1)
+    prune_manifest(man)
+    atomic_write_json(path, man)
     return man
 
 
-def _update_latest(run: datetime, manifest: dict) -> None:
+def _ready_timesteps(manifest: dict | None) -> list[dict]:
+    return [row for row in (manifest or {}).get("timesteps", []) if isinstance(row, dict) and "error" not in row and row.get("valid")]
+
+
+def _read_latest_run() -> datetime | None:
+    try:
+        with open(config.LATEST_FILE, encoding="utf-8") as fh:
+            raw = json.load(fh).get("run")
+        if not raw:
+            return None
+        parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _update_latest(run: datetime, manifest: dict) -> bool:
+    """Publish a run that still has usable timesteps. Never move latest backward."""
+    if not _ready_timesteps(manifest):
+        return False
+    current = _read_latest_run()
+    candidate = run if run.tzinfo else run.replace(tzinfo=timezone.utc)
+    if current is not None and candidate < current:
+        return False
     os.makedirs(os.path.dirname(config.LATEST_FILE), exist_ok=True)
-    with open(config.LATEST_FILE, "w") as fh:
-        json.dump({
+    atomic_write_json(config.LATEST_FILE, {
             "model": "GFS",
             "run": _fmt(run),
             "generated_at": _utcnow(),
             "manifest": f"/api/gfs/runs/{source.run_dir_name(run)}/manifest.json",
             "timesteps": manifest.get("timesteps", []),
-        }, fh, indent=1)
+        })
+    return True
 
 
 def _cleanup_old_runs(keep: int = config.RETENTION_RUNS) -> list[str]:
-    removed = []
-    for base in (
-        os.path.join(config.TILE_DIR, "gfs"),
-        os.path.join(config.NUMERIC_TILE_DIR, "gfs"),
-    ):
-        if not os.path.isdir(base):
-            continue
-        runs = sorted(d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d)))
-        for old in runs[:-keep] if len(runs) > keep else []:
-            shutil.rmtree(os.path.join(base, old), ignore_errors=True)
-            if old not in removed:
-                removed.append(old)
-    return removed
+    return cleanup("gfs", locked=True)["removed"]
 
 
 # ---------------------------------------------------------------- main
@@ -194,7 +202,10 @@ def process_run(run: datetime, max_hours: int | None = None,
     hours = forecast_list if forecast_list is not None else config.forecast_hours()
     if max_hours is not None:
         hours = [h for h in hours if h <= max_hours]
+    hours = [h for h in hours if keep_step(run, h)]
     existing = _load_manifest(run)
+    if existing:
+        prune_manifest(existing)
     by_hour: dict[int, dict] = {
         int(t["forecast_hour"]): t
         for t in (existing or {}).get("timesteps", [])
@@ -202,8 +213,9 @@ def process_run(run: datetime, max_hours: int | None = None,
     }
     grib_keys = None if keys is None else [k for k in keys if k in decode.WANTED]
     check_keys = [k for k in (keys or []) if k != "wind"]
-    if not force and keys is None and _is_complete(run, len(hours)):
+    if not force and keys is None and _is_complete(run, hours):
         print(f"run {source.run_dir_name(run)} already complete, skipping")
+        _update_latest(run, existing)
         return existing
     if (
         not force
@@ -220,6 +232,8 @@ def process_run(run: datetime, max_hours: int | None = None,
     for chunk_start in range(0, len(hours), config.CHUNK_TIMESTEPS):
         chunk = hours[chunk_start:chunk_start + config.CHUNK_TIMESTEPS]
         for fh in chunk:
+            if not keep_step(run, fh):
+                continue
             if not force and check_keys and _hour_has_keys(run, fh, check_keys):
                 print(f"  f{fh:03d} {','.join(check_keys)} already present, skip")
                 continue
@@ -232,6 +246,8 @@ def process_run(run: datetime, max_hours: int | None = None,
                 num_root = os.path.join(
                     config.NUMERIC_TILE_DIR, "gfs", source.run_dir_name(run), valid_name
                 )
+                if not keep_step(run, fh):
+                    continue
                 counts = render.render_timestep(grids, out_root, num_root, keys=keys)
                 rec = dict(by_hour.get(fh) or {})
                 rec["forecast_hour"] = fh
@@ -254,7 +270,7 @@ def process_run(run: datetime, max_hours: int | None = None,
             finally:
                 if os.path.exists(raw_path):
                     os.remove(raw_path)
-        _write_manifest(run, _ordered_timesteps(hours, by_hour), status="partial")
+        _update_latest(run, _write_manifest(run, _ordered_timesteps(hours, by_hour), status="partial"))
 
     timesteps = _ordered_timesteps(hours, by_hour)
     status = (

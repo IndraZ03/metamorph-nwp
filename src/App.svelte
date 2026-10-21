@@ -5,11 +5,10 @@
   import ParamToolbar from './components/ParamToolbar.svelte';
   import RadarModal from './components/RadarModal.svelte';
   import SatelliteModal from './components/SatelliteModal.svelte';
-  import SpartanModal from './components/SpartanModal.svelte';
   import UserLayers from './components/UserLayers.svelte';
   import DrawingSidebar from './components/DrawingSidebar.svelte';
   import NwpPopup from './components/NwpPopup.svelte';
-  import { proxyCuaca, proxySatelliteTile } from './services/bmkg.js';
+  import { proxyCuaca, proxySatelliteTile, satelliteFrames, verifySatellite } from './services/bmkg.js';
   import {
     ECMWF_POLL_MS,
     GLOBAL_MODELS,
@@ -40,7 +39,7 @@
     setLayerVisible,
     toggleSidebar,
   } from './services/drawing/store.svelte.js';
-  import { spartanTileTemplate } from './services/spartan.js';
+  import { spartanTileTemplate, SPARTAN_PRODUCTS, buildSpartanFrames, findLatestValidSpartanStart, verifySpartan } from './services/spartan.js';
 
   // State management using Svelte 5 runes
   let mapContainer = $state(null);
@@ -50,7 +49,187 @@
   // Modals visibility
   let showRadarModal = $state(false);
   let showSatelliteModal = $state(false);
-  let showSpartanModal = $state(false);
+  let spartanActive = $state(false);
+  let spartanProduct = $state(SPARTAN_PRODUCTS[0]);
+  let spartanFrames = $state([]);
+  let spartanToken = $state(null);
+  let spartanStatus = $state('');
+  let spartanLoading = $state(false);
+  let spartanPlaying = $state(false);
+  let spartanLoop = $state(false);
+  let satelliteSteps = $state([]);
+  let satellitePlaying = $state(false);
+  let satelliteLoop = $state(false);
+  let satelliteLoading = $state(false);
+  let satelliteStatus = $state('');
+  let satelliteRequest = 0;
+  let satelliteAbort;
+  let satelliteTimer;
+  let satelliteSeekTimer;
+  function stopSatellitePlay() { clearTimeout(satelliteTimer); satellitePlaying = false; }
+  function cancelSatellite() {
+    ++satelliteRequest;
+    satelliteAbort?.abort();
+    clearTimeout(satelliteSeekTimer);
+    stopSatellitePlay();
+    satelliteLoading = false;
+  }
+  async function seekSatellite(frame) {
+    if (!satelliteData || !frame) return;
+    satelliteAbort?.abort();
+    const generation = ++satelliteRequest;
+    const controller = new AbortController();
+    satelliteAbort = controller;
+    const data = satelliteData;
+    satelliteLoading = true;
+    satelliteStatus = 'Memuat satelit…';
+    try {
+      const ok = await verifySatellite(data.product, frame.token, controller.signal);
+      if (generation !== satelliteRequest || !satelliteData) return;
+      if (!ok) throw new Error('Citra tidak tersedia. Menampilkan citra terakhir.');
+      renderSatellite({ ...data, currentBaserun: frame.token });
+      satelliteStatus = '';
+    } catch (error) {
+      if (generation === satelliteRequest && !controller.signal.aborted) {
+        satelliteStatus = error.message;
+        stopSatellitePlay();
+      }
+    } finally { if (generation === satelliteRequest) satelliteLoading = false; }
+  }
+  function queueSatellite(frame) {
+    cancelSatellite();
+    satelliteSeekTimer = setTimeout(() => seekSatellite(frame), 160);
+  }
+  async function stepSatellite(delta) {
+    clearTimeout(satelliteSeekTimer);
+    const index = satelliteSteps.findIndex(f => f.token === satelliteData?.currentBaserun);
+    let next = index + delta;
+    if (next < 0 || next >= satelliteSteps.length) {
+      if (!satelliteLoop) { stopSatellitePlay(); return; }
+      next = (next + satelliteSteps.length) % satelliteSteps.length;
+    }
+    await seekSatellite(satelliteSteps[next]);
+  }
+  function startSatellitePlay() {
+    if (satellitePlaying || satelliteLoading || satelliteSteps.length < 2) return;
+    satellitePlaying = true;
+    const tick = async () => {
+      if (!satellitePlaying) return;
+      await stepSatellite(1);
+      if (satellitePlaying) satelliteTimer = setTimeout(tick, 1200);
+    };
+    satelliteTimer = setTimeout(tick, 1200);
+  }
+  function applySatellite(data) {
+    cancelSatellite();
+    satelliteSteps = satelliteFrames(data?.baseruns);
+    satelliteStatus = '';
+    renderSatellite(data);
+    if (data) selectTimeline('satellite');
+  }
+  let timelineContext = $state('nwp');
+  let spartanRequest = 0;
+  let spartanAbort;
+  let spartanTimer;
+  let spartanSeekTimer;
+
+  function stopSpartanPlay() {
+    clearTimeout(spartanTimer);
+    spartanPlaying = false;
+  }
+  function selectTimeline(context) {
+    stopNwpPlay();
+    stopSpartanPlay();
+    cancelSatellite();
+    timelineContext = context;
+  }
+  async function selectSpartan(product, frame = null) {
+    spartanActive = true;
+    selectTimeline('spartan');
+    if (!frame && product.id === spartanProduct.id && spartanData?.product.id === product.id && !spartanLoading) return;
+    if (!frame && spartanFrames.length) frame = spartanFrames.find((f) => f.token === spartanToken) || spartanFrames[0];
+    clearTimeout(spartanSeekTimer);
+    spartanAbort?.abort();
+    const generation = ++spartanRequest;
+    const controller = new AbortController();
+    spartanAbort = controller;
+    spartanProduct = product;
+    spartanLoading = true;
+    spartanStatus = 'Memuat KARHUTLA…';
+    try {
+      let frames = spartanFrames;
+      if (!frame) {
+        const start = await findLatestValidSpartanStart(product.id, 5, controller.signal);
+        if (!start) throw new Error('Data KARHUTLA tidak tersedia.');
+        frames = buildSpartanFrames(start);
+        frame = frames[0];
+      }
+      const ok = await verifySpartan({ product: product.id, start: frame.startDate, end: frame.endDate, signal: controller.signal });
+      if (generation !== spartanRequest || !spartanActive) return;
+      if (!ok) throw new Error('Interval KARHUTLA tidak tersedia. Lapisan tetap pada interval terakhir.');
+      applySpartan({ product, startDate: frame.startDate, endDate: frame.endDate, rangeDays: 1, opacity: 0.9 });
+      spartanFrames = frames;
+      spartanToken = frame.token;
+      spartanStatus = '';
+    } catch (error) {
+      if (generation === spartanRequest && spartanActive && !controller.signal.aborted) {
+        spartanStatus = error.message;
+        stopSpartanPlay();
+      }
+    } finally {
+      if (generation === spartanRequest) spartanLoading = false;
+    }
+  }
+  function seekSpartan(frame) {
+    stopSpartanPlay();
+    spartanAbort?.abort();
+    ++spartanRequest;
+    clearTimeout(spartanSeekTimer);
+    spartanSeekTimer = setTimeout(() => selectSpartan(spartanProduct, frame), 160);
+  }
+  async function stepSpartan(delta) {
+    const index = spartanFrames.findIndex((f) => f.token === spartanToken);
+    let next = index + delta;
+    if (next < 0 || next >= spartanFrames.length) {
+      if (!spartanLoop) { stopSpartanPlay(); return; }
+      next = (next + spartanFrames.length) % spartanFrames.length;
+    }
+    await selectSpartan(spartanProduct, spartanFrames[next]);
+  }
+  function startSpartanPlay() {
+    if (spartanLoading || !spartanFrames.length) return;
+    spartanPlaying = true;
+    const tick = async () => {
+      if (!spartanPlaying) return;
+      await stepSpartan(1);
+      if (spartanPlaying) spartanTimer = setTimeout(tick, 1200);
+    };
+    spartanTimer = setTimeout(tick, 1200);
+  }
+  function toggleSpartan() {
+    if (spartanActive) {
+      spartanActive = false;
+      ++spartanRequest;
+      spartanAbort?.abort();
+      clearTimeout(spartanSeekTimer);
+      cancelSatellite();
+      stopSpartanPlay();
+      spartanFrames = [];
+      spartanToken = null;
+      spartanStatus = '';
+      spartanLoading = false;
+      applySpartan(null);
+      selectTimeline(satelliteData ? 'satellite' : 'nwp');
+    } else {
+      spartanActive = true;
+      selectTimeline('spartan');
+      selectSpartan(SPARTAN_PRODUCTS[0]);
+    }
+  }
+  $effect(() => {
+    const active = { nwp: GLOBAL_MODELS.includes(activeModel), spartan: spartanActive, satellite: !!satelliteData };
+    if (!active[timelineContext]) selectTimeline(active.satellite ? 'satellite' : active.spartan ? 'spartan' : 'nwp');
+  });
 
   // Active layer records
   let radarData = $state(null);
@@ -82,6 +261,9 @@
   const NWP_OPACITY = 0.85;
   const NWP_PLAY_MS = 700;
   const NWP_LOAD_MS = 2500;
+
+  // 'land' hides the forecast over water; 'full' paints land and sea.
+  let nwpExtent = $state('full');
 
   // Wind animation state
   let windActive = $state(false);
@@ -158,12 +340,12 @@
     // 5. Outline Garis Pantai / Pesisir Pulau (Coastline)
     // Carto Dark Matter tidak punya layer stroke untuk pulau/pantai secara default
     // Ditempatkan sebelum waterway_label agar selalu berada di atas layer satelit/radar/daratan
-    if (!m.getLayer('coastline_outline') && m.getSource('carto')) {
+    if (!m.getLayer('coastline_outline') && m.getSource('protomaps')) {
       m.addLayer(
         {
           id: 'coastline_outline',
           type: 'line',
-          source: 'carto',
+          source: 'protomaps',
           'source-layer': 'water',
           filter: ['all', ['==', '$type', 'Polygon']],
           paint: {
@@ -228,6 +410,11 @@
     });
 
     return () => {
+      ++spartanRequest;
+      spartanAbort?.abort();
+      clearTimeout(spartanSeekTimer);
+      cancelSatellite();
+      stopSpartanPlay();
       stopNwpPoll();
       stopNwpPlay();
       closeNwpPopup();
@@ -250,6 +437,10 @@
     if (map.getLayer('boundary_country_inner')) return 'boundary_country_inner';
     if (map.getLayer('waterway_label')) return 'waterway_label';
     if (map.getLayer('place_hamlet')) return 'place_hamlet';
+    // Fill air basemap menutup seluruh laut. Raster harus di atasnya,
+    // kalau tidak forecast hanya terlihat di daratan.
+    if (map.getLayer('water_shadow')) return 'water_shadow';
+    if (map.getLayer('water')) return 'water';
     return undefined;
   }
 
@@ -390,6 +581,48 @@
     return slot ? 'nwp-layer-b' : 'nwp-layer';
   }
 
+  function nwpMaskId(slot) {
+    return slot ? 'nwp-sea-mask-b' : 'nwp-sea-mask';
+  }
+
+  function seaMaskColor() {
+    if (!map) return '#0b1220';
+    const bg = map.getPaintProperty('background', 'background-color');
+    return typeof bg === 'string' && bg ? bg : '#0b1220';
+  }
+
+  function applyNwpExtent() {
+    if (!map) return;
+    for (const slot of [0, 1]) {
+      const mask = nwpMaskId(slot);
+      const lid = nwpLayerId(slot);
+      if (nwpExtent === 'land' && map.getLayer(lid) && map.getSource('protomaps')) {
+        if (!map.getLayer(mask)) {
+          map.addLayer(
+            {
+              id: mask,
+              type: 'fill',
+              source: 'protomaps',
+              'source-layer': 'water',
+              filter: ['==', '$type', 'Polygon'],
+              paint: { 'fill-color': seaMaskColor(), 'fill-opacity': 1 },
+            },
+            overlayBeforeLayer()
+          );
+        }
+        if (map.getLayer(mask) && map.getLayer(lid)) map.moveLayer(mask);
+        continue;
+      }
+      if (map.getLayer(mask)) map.removeLayer(mask);
+    }
+  }
+
+  function setNwpExtent(extent) {
+    if (extent !== 'land' && extent !== 'full') return;
+    nwpExtent = extent;
+    applyNwpExtent();
+  }
+
   function nwpSourceId(slot) {
     return slot ? 'nwp-source-b' : 'nwp-source';
   }
@@ -401,8 +634,10 @@
   }
 
   function dropNwpSlot(slot) {
+    const mask = nwpMaskId(slot);
     const lid = nwpLayerId(slot);
     const sid = nwpSourceId(slot);
+    if (map.getLayer(mask)) map.removeLayer(mask);
     if (map.getLayer(lid)) map.removeLayer(lid);
     if (map.getSource(sid)) map.removeSource(sid);
   }
@@ -513,6 +748,7 @@
       },
       nwpBeforeLayer()
     );
+    applyNwpExtent();
     return { sid, lid, attrib };
   }
 
@@ -831,7 +1067,7 @@
   }
 
   // Manage Satellite Layer on Map
-  function applySatellite(data) {
+  function renderSatellite(data) {
     if (!map || !mapLoaded) return;
 
     // Remove existing satellite layer & source
@@ -892,14 +1128,6 @@
     );
 
     satelliteData = data;
-  }
-
-  function changeSatelliteBaserun(newBaserun) {
-    if (!satelliteData) return;
-    applySatellite({
-      ...satelliteData,
-      currentBaserun: newBaserun,
-    });
   }
 
   // Manage SPARTAN Layer on Map (BMKG fire-weather tiles, TMS scheme)
@@ -969,7 +1197,12 @@
   function handleSelectModel(modelId) {
     const next = activeModel === modelId ? null : modelId;
     activeModel = next;
+    selectTimeline(next ? 'nwp' : (spartanActive ? 'spartan' : 'nwp'));
     stopNwpPlay();
+
+    if (next && GLOBAL_MODELS.includes(next) && !windActive) {
+      toggleWind();
+    }
 
     if (windOverlay) {
       if (next && GLOBAL_MODELS.includes(next) && windActive) {
@@ -1207,7 +1440,7 @@
 
 <main
     class="relative w-screen h-screen overflow-hidden bg-slate-100"
-    class:nwp-timeline-on={GLOBAL_MODELS.includes(activeModel) && nwpSteps.length > 0}
+    class:nwp-timeline-on={!!satelliteData || spartanActive || (GLOBAL_MODELS.includes(activeModel) && nwpSteps.length > 0)}
   >
   <!-- MapLibre Container -->
   <div bind:this={mapContainer} class="absolute inset-0 w-full h-full z-0"></div>
@@ -1235,10 +1468,12 @@
     radarActive={!!radarData}
     satelliteActive={!!satelliteData}
     drawingActive={drawing.sidebarOpen}
-    spartanActive={!!spartanData}
+    {spartanActive}
+    spartanProduct={spartanProduct.id}
+    onSelectSpartan={(product) => { stopSpartanPlay(); selectSpartan(product); }}
     onOpenRadar={() => (showRadarModal = true)}
     onOpenSatellite={() => (showSatelliteModal = true)}
-    onOpenSpartan={() => (showSpartanModal = true)}
+    onOpenSpartan={toggleSpartan}
     onSelectModel={handleSelectModel}
     onToggleDrawing={handleToggleDrawing}
   />
@@ -1263,14 +1498,13 @@
     onRename={renameUserLayer}
     onToggleDraw={toggleDrawGroup}
     {spartanData}
-    onCloseSpartan={() => applySpartan(null)}
     {radarData}
     {satelliteData}
     {nwpData}
     onCloseRadar={() => applyRadar(null)}
     onCloseSatellite={() => applySatellite(null)}
     onCloseNwp={closeNwp}
-    onChangeSatelliteBaserun={changeSatelliteBaserun}
+    onCloseSpartan={() => { if (spartanActive) toggleSpartan(); }}
   />
 
   {#if GLOBAL_MODELS.includes(activeModel)}
@@ -1284,10 +1518,38 @@
       {windStatus}
       onToggleWind={toggleWind}
       onChangeWindSpeed={changeWindSpeed}
+      extent={nwpExtent}
+      onSetExtent={setNwpExtent}
     />
   {/if}
 
-  {#if GLOBAL_MODELS.includes(activeModel)}
+  {#if spartanActive}
+    <div class="karhutla-status" role="status">{spartanStatus}</div>
+  {/if}
+  {#if Number(spartanActive) + Number(GLOBAL_MODELS.includes(activeModel)) + Number(!!satelliteData) > 1}
+    <div class="timeline-context" aria-label="Konteks timeline">
+      {#if GLOBAL_MODELS.includes(activeModel)}<button type="button" aria-pressed={timelineContext === 'nwp'} onclick={() => selectTimeline('nwp')}>NWP</button>{/if}
+      {#if spartanActive}<button type="button" aria-pressed={timelineContext === 'spartan'} onclick={() => selectTimeline('spartan')}>KARHUTLA</button>{/if}
+      {#if satelliteData}<button type="button" aria-pressed={timelineContext === 'satellite'} onclick={() => selectTimeline('satellite')}>Satelit</button>{/if}
+    </div>
+  {/if}
+  {#if satelliteData}<div class="karhutla-status" role="status">{satelliteStatus}</div>{/if}
+  {#key `${timelineContext}:${satelliteData?.product.id || ''}`}
+  {#if satelliteData && timelineContext === 'satellite'}
+    <ForecastTimeline observation={true} steps={satelliteSteps} selectedToken={satelliteData.currentBaserun}
+      playing={satellitePlaying} loop={satelliteLoop} disabled={!satelliteSteps.length}
+      modelTitle={satelliteData.product.label || 'Satelit'} onSeek={queueSatellite}
+      onPlay={startSatellitePlay} onPause={stopSatellitePlay}
+      onPrev={() => { stopSatellitePlay(); stepSatellite(-1); }} onNext={() => { stopSatellitePlay(); stepSatellite(1); }}
+      onLoop={(on) => (satelliteLoop = on)} />
+  {:else if spartanActive && timelineContext === 'spartan'}
+    <ForecastTimeline daily={true} steps={spartanFrames} selectedToken={spartanToken}
+      playing={spartanPlaying} loop={spartanLoop} disabled={!spartanFrames.length}
+      modelTitle={`KARHUTLA ${spartanData?.product.code || spartanProduct.code}`} onSeek={seekSpartan}
+      onPlay={startSpartanPlay} onPause={stopSpartanPlay}
+      onPrev={() => { stopSpartanPlay(); stepSpartan(-1); }} onNext={() => { stopSpartanPlay(); stepSpartan(1); }}
+      onLoop={(on) => (spartanLoop = on)} />
+  {:else if GLOBAL_MODELS.includes(activeModel)}
     <ForecastTimeline
       steps={nwpSteps}
       selectedToken={nwpStepToken}
@@ -1304,6 +1566,8 @@
       onLoop={(on) => (nwpLoop = on)}
     />
   {/if}
+
+  {/key}
 
   <!-- Radar Modal -->
   {#if showRadarModal}
@@ -1325,15 +1589,13 @@
     />
   {/if}
 
-  <!-- SPARTAN Modal -->
-  {#if showSpartanModal}
-    <SpartanModal
-      currentProduct={spartanData?.product}
-      currentStart={spartanData?.startDate}
-      currentRangeDays={spartanData?.rangeDays}
-      currentOpacity={spartanData?.opacity ?? 0.9}
-      onSelect={applySpartan}
-      onClose={() => (showSpartanModal = false)}
-    />
-  {/if}
 </main>
+
+<style>
+  .karhutla-status { position: absolute; z-index: 35; top: 88px; left: 16px; right: 88px; max-width: 420px; color: #fff; background: #172033; border-radius: 6px; font-size: 12px; padding: 6px; }
+  .karhutla-status:empty { display: none; }
+  .timeline-context button { background: #172033; color: #fff; border: 1px solid #64748b; border-radius: 8px; padding: 8px 10px; font-size: 12px; cursor: pointer; }
+  .timeline-context button[aria-pressed='true'] { background: #2563eb; border-color: #93c5fd; }
+  .timeline-context { position: absolute; z-index: 36; bottom: 130px; left: 16px; display: flex; gap: 6px; }
+  @media (max-width: 640px) { .timeline-context { bottom: 180px; } }
+</style>
