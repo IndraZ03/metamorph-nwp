@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { availableVars, paramsAvailable } from './src/services/nwp.js';
+import { availableVars, listSteps, paramsAvailable } from './src/services/nwp.js';
 
 const gfsManifest = {
   run: '2026-10-17T12:00:00Z',
@@ -67,4 +67,35 @@ test('paramsAvailable always exposes Wind Speed for ICON like GFS', () => {
   assert.ok(icon.includes('wind_10m'));
   const gfs = paramsAvailable('gfs', gfsManifest).map((p) => p.id);
   assert.ok(gfs.includes('wind'));
+});
+
+test('listSteps filters steps per requested varId across models', () => {
+  const ecmwf = {
+    steps: [
+      { step: 0, valid_time: '2026-10-18T00:00:00Z', ready: true, vars: ['t2m'] },
+      { step: 6, valid_time: '2026-10-18T06:00:00Z', ready: true, vars: ['rh'] },
+      { step: 12, valid_time: '2026-10-18T12:00:00Z', ready: false, vars: ['t2m'] },
+    ],
+  };
+  const ecmwfT = listSteps('ecmwf', ecmwf, 't2m');
+  assert.deepEqual(ecmwfT.map((s) => s.step), [0]);
+
+  const gfs = {
+    timesteps: [
+      { forecast_hour: 0, valid: '2026-10-18T00:00:00Z', params: ['temperature'] },
+      { forecast_hour: 3, valid: '2026-10-18T03:00:00Z', params: ['wind'] },
+      { forecast_hour: 6, valid: '2026-10-18T06:00:00Z', params: ['temperature'], error: 'fail' },
+    ],
+  };
+  const gfsT = listSteps('gfs', gfs, 'temperature');
+  assert.deepEqual(gfsT.map((s) => s.step), [0]);
+
+  const icon = {
+    timesteps: [
+      { step: 0, valid_time: '2026-10-18T00:00:00Z', params: ['t_2m'] },
+      { step: 1, valid_time: '2026-10-18T01:00:00Z', params: ['tot_prec'] },
+    ],
+  };
+  const iconT = listSteps('icon', icon, 't_2m');
+  assert.deepEqual(iconT.map((s) => s.step), [0]);
 });

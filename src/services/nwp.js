@@ -407,7 +407,7 @@ export function listSteps(modelId, manifest, varId) {
   let rows = [];
   if (modelId === 'ecmwf') {
     rows = (manifest?.steps || [])
-      .filter((s) => s.ready && s.valid_time)
+      .filter((s) => s.ready && s.valid_time && (!varId || !s.vars?.length || s.vars.includes(varId)))
       .map((s) =>
         withTime({
           step: s.step,
@@ -417,7 +417,7 @@ export function listSteps(modelId, manifest, varId) {
       );
   } else if (modelId === 'gfs') {
     rows = (manifest?.timesteps || [])
-      .filter((s) => !s.error && s.valid)
+      .filter((s) => !s.error && s.valid && (!varId || !s.params?.length || s.params.includes(varId)))
       .map((s) =>
         withTime({
           step: s.forecast_hour,
@@ -428,7 +428,7 @@ export function listSteps(modelId, manifest, varId) {
   } else if (modelId === 'icon') {
     rows = (manifest?.timesteps || [])
       .filter((s) => {
-        if (!s.valid_time) return false;
+        if (s.error || !s.valid_time) return false;
         if (varId && Array.isArray(s.params) && s.params.length) {
           return s.params.includes(varId);
         }
