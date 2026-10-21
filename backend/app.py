@@ -35,6 +35,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from engine.landslide.api import router as landslide_router
+
+app.include_router(landslide_router)
+
+from engine.flood.api import router as flood_router
+
+app.include_router(flood_router)
+
 # 1x1 transparent WebP fallback
 TRANSPARENT_WEBP = (
     b"RIFF\x1a\x00\x00\x00WEBPVP8L\x0e\x00\x00\x00/g\x00\x00\x00\x04\x88\x88\x08\x00"

@@ -114,6 +114,16 @@ def process_run(
     if skip_if_same and not pending:
         log.info("run %s already complete (%s steps) — skip", run_id, len(ready_set))
         publish_latest(manifest)
+        try:
+            from .landslide.processor import process_run as process_landslide
+            process_landslide(run_id)
+        except Exception:
+            log.exception("landslide potential processing failed — prior valid output retained")
+        try:
+            from .flood.processor import process_run as process_flood
+            process_flood(run_id)
+        except Exception:
+            log.exception("flood indicators processing failed — prior valid output retained")
         return manifest
 
     run_dir = config.RUNS_DIR / run_id
@@ -121,6 +131,12 @@ def process_run(
     cache_dir = config.CACHE_DIR / run_id
     cache_dir.mkdir(parents=True, exist_ok=True)
     write_run_manifest(manifest)
+
+    # Invalidate all attempted TP steps before rebuilding. Failed retrieval/retention
+    # must never leave older numeric arrays eligible for a new publication.
+    from .landslide import config as landslide_config
+    for step in pending:
+        (landslide_config.TP_DIR / run_id / f"{step}.json").unlink(missing_ok=True)
 
     for step in pending:
         grib = cache_dir / f"{step}.grib2"
@@ -130,6 +146,12 @@ def process_run(
             if not fields:
                 log.warning("step %s decoded empty", step)
                 continue
+            if "tp" in fields:
+                try:
+                    from .landslide.precipitation import retain_tp
+                    retain_tp(run_id, run_time, step, fields["tp"], grib)
+                except Exception:
+                    log.exception("TP provenance retention failed; landslide output disabled for step %s", step)
             vars_ready = write_step_tiles(run_dir, step, fields)
             mark_step_ready(manifest, step, vars_ready)
             publish_latest(manifest)
@@ -142,6 +164,16 @@ def process_run(
             continue
 
     retain_runs()
+    try:
+        from .landslide.processor import process_run as process_landslide
+        process_landslide(run_id)
+    except Exception:
+        log.exception("landslide potential processing failed — prior valid output retained")
+    try:
+        from .flood.processor import process_run as process_flood
+        process_flood(run_id)
+    except Exception:
+        log.exception("flood indicators processing failed — prior valid output retained")
     if cache_dir.exists() and not any(cache_dir.iterdir()):
         shutil.rmtree(cache_dir, ignore_errors=True)
     return manifest

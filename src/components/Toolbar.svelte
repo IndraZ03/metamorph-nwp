@@ -14,6 +14,8 @@
     { id: 'ecmwf', label: 'ECMWF', icon: 'ecmwf', active: () => activeModel === 'ecmwf', enabled: true },
     { id: 'gfs', label: 'GFS', icon: 'gfs', active: () => activeModel === 'gfs', enabled: true },
     { id: 'icon', label: 'ICON', icon: 'icon', active: () => activeModel === 'icon', enabled: true },
+    { id: 'landslide', label: 'Potensi Tanah Longsor', icon: 'landslide', active: () => activeModel === 'landslide', enabled: true },
+    { id: 'flood', label: 'Indonesia Flood Potential', icon: 'flood', active: () => activeModel === 'flood', enabled: true },
     { id: 'cawo', label: 'CAWO', icon: 'cawo', active: () => activeModel === 'cawo', enabled: false },
     { id: 'wrf', label: 'WRF', icon: 'wrf', active: () => activeModel === 'wrf', enabled: false },
     { id: 'wrf-chem', label: 'WRF-Chem', icon: 'chem', active: () => activeModel === 'wrf-chem', enabled: false },
@@ -68,6 +70,10 @@
           <span class="font-bold text-[10px] tracking-tighter">GFS</span>
         {:else if btn.icon === 'icon'}
           <span class="font-bold text-[10px] tracking-tighter">ICO</span>
+        {:else if btn.icon === 'landslide'}
+          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 20 10 4l5 10 3-4 4 10Z"/><path d="m13 6 3 3m1-5 3 3m-2 11 3 2"/></svg>
+        {:else if btn.icon === 'flood'}
+          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12q3-3 5 0t5 0t5 0t5 0M2 18q3-3 5 0t5 0t5 0t5 0M8 9V4h8v5"/></svg>
         {:else if btn.icon === 'cawo'}
           <span class="font-bold text-[10px] tracking-tighter">CAW</span>
         {:else if btn.icon === 'wrf'}

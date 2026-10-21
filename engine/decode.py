@@ -120,10 +120,14 @@ def decode_step(grib_path: Path) -> dict[str, dict]:
 
     da = _pick(by_name, "tp")
     if da is not None:
-        lats, lons, metres = _to_latlon_array(da)
-        mm = m_to_mm(metres)
-        mm = np.where(np.isfinite(mm), np.clip(mm, 0, None), mm)
-        out["tp"] = {"lats": lats, "lons": lons, "values": mm}
+        try:
+            from .landslide.precipitation import unit_factor
+            lats, lons, precipitation = _to_latlon_array(da)
+            mm = precipitation * unit_factor(da.attrs.get("units") or da.attrs.get("GRIB_units"))
+            mm = np.where(np.isfinite(mm) & (mm >= 0), mm, np.nan)
+            out["tp"] = {"lats": lats, "lons": lons, "values": mm}
+        except Exception:
+            log.exception("failed to decode tp precipitation variable")
 
     da = _pick(by_name, "mucape")
     if da is not None:

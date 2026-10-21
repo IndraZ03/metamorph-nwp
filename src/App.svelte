@@ -27,6 +27,12 @@
   import { inspectValues, reverseGeocode } from './services/numericTiles.js';
   import { bboxOf, colorFor, countByGeometry, layerDefs } from './services/userLayers.js';
   import { WindOverlay } from './services/windAnimation.js';
+  import ForecastControl from './components/ForecastControl.svelte';
+  import { timelineTime, reconcileTimeline } from './services/forecastTimeline.js';
+  import LandslideLegend from './components/LandslideLegend.svelte';
+  import FloodLegend from './components/FloodLegend.svelte';
+  import { fetchFloodMetadata, floodTileUrl, fetchFloodPoint, pointContent as floodPointContent } from './services/flood.js';
+  import { fetchLandslideMetadata, landslideTileUrl, fetchLandslidePoint, pointContent } from './services/landslide.js';
 
   // State management using Svelte 5 runes
   let mapContainer = $state(null);
@@ -58,6 +64,209 @@
   let windSpeed = $state(1.0);
   let windOverlay = null;
   let windStatus = $state({ state: 'ready', mode: 'demo', message: 'Simulasi — bukan data model' });
+
+  let forecastRows = $state([]);
+  let forecastStep = $state(null);
+  let forecastRunTime = $state('');
+  let landslideMeta = $state(null);
+  let landslideError = $state('');
+  let landslideOpacity = $state(0.6);
+  let landslideVisible = $state(true);
+  let landslideRequest = null;
+  let landslidePointRequest = null;
+  let landslidePopup = null;
+  let landslidePoll = null;
+  let nwpRequestSeq = 0;
+
+  let floodMeta = $state(null);
+  let floodError = $state('');
+  let floodNotice = $state('');
+  let floodOpacity = $state(0.6);
+  let floodVisible = $state(true);
+  let floodIndicator = $state('rainfall');
+  let floodMode = $state('screening');
+  let floodRequest, floodPointRequest, floodPopup, floodPoll;
+  let floodGeneration = 0;
+  let timelineAnchor = null;
+  let timelineNotice = $state('');
+
+  function currentTimelineAnchor() {
+    const row = forecastRows.find((r) => Number(r.step) === forecastStep);
+    return row ? { runTime: forecastRunTime, validTime: timelineTime(row, forecastRunTime) } : timelineAnchor;
+  }
+
+  function clearFlood() {
+    floodGeneration++;
+    floodPointRequest?.abort();
+    floodPopup?.remove();
+    floodPopup = null;
+    if (map?.getLayer('flood-layer')) map.removeLayer('flood-layer');
+    if (map?.getSource('flood-source')) map.removeSource('flood-source');
+  }
+
+  function stopFlood() {
+    floodRequest?.abort();
+    clearInterval(floodPoll);
+    floodPoll = null;
+    clearFlood();
+  }
+
+  function renderFlood() {
+    clearFlood();
+    if (!map?.isStyleLoaded() || activeModel !== 'flood' || !floodMeta || !floodVisible) return;
+    const row = floodMeta.steps.find((r) => r.step === forecastStep);
+    if (!row?.ready) { floodError = 'Jendela P24 belum lengkap atau tidak tersedia'; return; }
+    floodError = '';
+    map.addSource('flood-source', { type: 'raster', tiles: [floodTileUrl(floodMeta, forecastStep, floodIndicator)],
+      tileSize: 256, bounds: floodMeta.bbox, minzoom: floodMeta.minzoom, maxzoom: floodMeta.maxzoom,
+      attribution: 'ECMWF IFS × InaRISK BNPB · Eksperimental, bukan peringatan resmi' });
+    map.addLayer({ id: 'flood-layer', type: 'raster', source: 'flood-source',
+      paint: { 'raster-opacity': floodOpacity, 'raster-resampling': 'nearest', 'raster-fade-duration': 0 } }, overlayBeforeLayer());
+  }
+
+  async function applyFlood() {
+    floodRequest?.abort();
+    const request = new AbortController();
+    floodRequest = request;
+    floodError = 'Memuat indikator banjir…';
+    try {
+      const metadata = await fetchFloodMetadata(request.signal);
+      if (request.signal.aborted || floodRequest !== request || activeModel !== 'flood') return;
+      const anchor = currentTimelineAnchor();
+      floodMeta = metadata;
+      forecastRows = metadata.steps.map((r) => ({ ...r, validTime: timelineTime(r, metadata.run_time) }));
+      forecastRunTime = metadata.run_time;
+      const selection = reconcileTimeline(forecastRows, forecastRunTime, anchor);
+      forecastStep = selection.step;
+      floodNotice = selection.notice;
+      timelineNotice = selection.notice;
+      timelineAnchor = null;
+      renderFlood();
+    } catch (error) {
+      if (request.signal.aborted || floodRequest !== request || activeModel !== 'flood') return;
+      clearFlood();
+      floodMeta = null;
+      forecastRows = [];
+      floodError = error.message;
+    }
+  }
+
+  async function handleFloodClick(event) {
+    if (!floodMeta || !floodVisible || !map?.getLayer('flood-layer')) return;
+    floodPointRequest?.abort();
+    floodPopup?.remove();
+    const request = new AbortController();
+    floodPointRequest = request;
+    const generation = ++floodGeneration;
+    const metadata = floodMeta, step = forecastStep;
+    try {
+      const data = await fetchFloodPoint(metadata, step, event.lngLat.lat, event.lngLat.lng, request.signal);
+      if (request.signal.aborted || generation !== floodGeneration || !floodVisible || activeModel !== 'flood' || metadata !== floodMeta || step !== forecastStep) return;
+      floodPopup = new maplibregl.Popup({ maxWidth: '340px' }).setLngLat(event.lngLat).setDOMContent(floodPointContent(data)).addTo(map);
+    } catch (error) {
+      if (!request.signal.aborted && generation === floodGeneration) floodError = error.message;
+    }
+  }
+
+  function clearLandslide() {
+    landslidePointRequest?.abort();
+    landslidePopup?.remove();
+    landslidePopup = null;
+    if (map?.getLayer('landslide-layer')) map.removeLayer('landslide-layer');
+    if (map?.getSource('landslide-source')) map.removeSource('landslide-source');
+  }
+
+  function stopLandslide() {
+    landslideRequest?.abort();
+    clearInterval(landslidePoll);
+    landslidePoll = null;
+    clearLandslide();
+  }
+
+  function renderLandslide() {
+    clearLandslide();
+    if (!map?.isStyleLoaded() || activeModel !== 'landslide' || !landslideMeta) return;
+    const row = landslideMeta.steps.find((s) => s.step === forecastStep);
+    if (!row?.ready) {
+      landslideError = `Jendela +${forecastStep} sampai +${forecastStep + 24} jam tidak tersedia`;
+      return;
+    }
+    landslideError = '';
+    map.addSource('landslide-source', {
+      type: 'raster', tiles: [landslideTileUrl(landslideMeta, row.step)], tileSize: 256,
+      bounds: landslideMeta.bbox, minzoom: landslideMeta.minzoom, maxzoom: landslideMeta.maxzoom,
+      attribution: 'BNPB InaRISK × ECMWF IFS · Eksperimental, bukan peringatan resmi',
+    });
+    map.addLayer({ id: 'landslide-layer', type: 'raster', source: 'landslide-source',
+      layout: { visibility: landslideVisible ? 'visible' : 'none' },
+      paint: { 'raster-opacity': landslideOpacity, 'raster-resampling': 'nearest', 'raster-fade-duration': 0 },
+    }, overlayBeforeLayer());
+  }
+
+  async function applyLandslide() {
+    landslideRequest?.abort();
+    const request = new AbortController();
+    landslideRequest = request;
+    clearLandslide();
+    landslideError = 'Memuat data BNPB/ECMWF…';
+    try {
+      const metadata = await fetchLandslideMetadata(request.signal);
+      if (request.signal.aborted || activeModel !== 'landslide') return;
+      const anchor = currentTimelineAnchor();
+      landslideMeta = metadata;
+      forecastRows = metadata.steps.map((row) => ({ ...row, validTime: timelineTime(row, metadata.run_time) }));
+      forecastRunTime = metadata.run_time;
+      const selection = reconcileTimeline(forecastRows, forecastRunTime, anchor);
+      forecastStep = selection.step;
+      timelineNotice = selection.notice;
+      timelineAnchor = null;
+      renderLandslide();
+    } catch (error) {
+      if (request.signal.aborted) return;
+      landslideMeta = null;
+      forecastRows = [];
+      landslideError = error.message;
+    }
+  }
+
+  async function handleLandslideClick(event) {
+    if (!landslideMeta || !landslideVisible || !map.getLayer('landslide-layer')) return;
+    landslidePointRequest?.abort();
+    landslidePopup?.remove();
+    const request = new AbortController();
+    landslidePointRequest = request;
+    const metadata = landslideMeta;
+    const step = forecastStep;
+    try {
+      const data = await fetchLandslidePoint(metadata, step, event.lngLat.lat, event.lngLat.lng, request.signal);
+      if (request.signal.aborted || activeModel !== 'landslide' || metadata !== landslideMeta || step !== forecastStep) return;
+      landslidePopup = new maplibregl.Popup({ maxWidth: '320px' }).setLngLat(event.lngLat).setDOMContent(pointContent(data)).addTo(map);
+    } catch (error) {
+      if (!request.signal.aborted) landslideError = error.message;
+    }
+  }
+
+  function changeForecastStep(step) {
+    nwpClickSeq++;
+    forecastStep = step;
+    if (activeModel === 'flood') renderFlood();
+    else if (activeModel === 'landslide') renderLandslide();
+    else if (GLOBAL_MODELS.includes(activeModel)) {
+      removeNwpLayer();
+      applyNwp(activeModel).catch(console.warn);
+    }
+  }
+
+  function changeLandslideOpacity(value) {
+    landslideOpacity = value;
+    if (map?.getLayer('landslide-layer')) map.setPaintProperty('landslide-layer', 'raster-opacity', value);
+  }
+
+  function toggleLandslideVisibility() {
+    landslideVisible = !landslideVisible;
+    landslidePopup?.remove();
+    if (map?.getLayer('landslide-layer')) map.setLayoutProperty('landslide-layer', 'visibility', landslideVisible ? 'visible' : 'none');
+  }
 
   // User overlays (GeoJSON / GPX)
   let userLayers = $state([]);
@@ -184,12 +393,20 @@
       console.error('MapLibre error:', e);
     });
 
+    m.on('style.load', () => {
+      if (activeModel === 'flood') renderFlood();
+    else if (activeModel === 'landslide') renderLandslide();
+    });
     m.on('click', (e) => {
-      handleNwpClick(e).catch((err) => console.warn('NWP click', err));
+      if (activeModel === 'flood') handleFloodClick(e).catch(console.warn);
+      else if (activeModel === 'landslide') handleLandslideClick(e).catch(console.warn);
+      else handleNwpClick(e).catch((err) => console.warn('NWP click', err));
     });
 
     return () => {
       stopNwpPoll();
+      stopFlood();
+      stopLandslide();
       closeNwpPopup();
       if (windOverlay) {
         windOverlay.destroy();
@@ -368,20 +585,38 @@
       return;
     }
 
+    const requestSeq = ++nwpRequestSeq;
     const spec = MODELS[modelId];
     let manifest;
     try {
       manifest = await fetchNwpLatest(modelId);
     } catch (err) {
+      if (activeModel !== modelId || requestSeq !== nwpRequestSeq) return;
+      removeNwpLayer();
       console.warn(`${spec.title} latest not ready`, err);
       startNwpPoll(modelId);
       return;
     }
 
-    if (activeModel !== modelId) return;
+    if (activeModel !== modelId || requestSeq !== nwpRequestSeq) return;
     const varId = nwpVar || defaultVar(modelId);
-    const step = pickNwpStep(modelId, manifest, varId);
+    const rows = modelId === 'ecmwf'
+      ? (manifest.steps || []).filter((s) => s.ready && (!s.vars?.length || s.vars.includes(varId))).map((s) => ({ step: s.step, validTime: s.valid_time, token: String(s.step) }))
+      : (manifest.timesteps || []).filter((s) => !s.error && (s.valid || s.valid_time) && (!s.params?.length || s.params.includes(varId))).map((s) => ({
+          step: s.forecast_hour ?? s.step, validTime: s.valid || s.valid_time,
+          token: modelId === 'gfs' ? String(s.valid).replace(/[-:TZ]/g, '').slice(0, 10) : s.step_str || String(s.step).padStart(3, '0'),
+        }));
+    const anchor = currentTimelineAnchor();
+    forecastRows = rows;
+    forecastRunTime = modelRunTime(modelId, manifest);
+    const preferred = pickNwpStep(modelId, manifest, varId);
+    const selection = reconcileTimeline(rows, forecastRunTime, anchor, preferred ? Number(preferred.step) : null);
+    forecastStep = selection.step;
+    timelineNotice = selection.notice;
+    timelineAnchor = null;
+    const step = rows.find((s) => Number(s.step) === forecastStep);
     if (!step) {
+      removeNwpLayer();
       console.warn(`${spec.title} manifest has no ready steps`);
       startNwpPoll(modelId);
       return;
@@ -625,7 +860,27 @@
 
   function handleSelectModel(modelId) {
     const next = activeModel === modelId ? null : modelId;
+    nwpRequestSeq += 1;
+    nwpClickSeq += 1;
+    timelineAnchor = currentTimelineAnchor();
+    timelineNotice = '';
+    stopFlood();
+    floodMeta = null;
+    stopLandslide();
+    removeNwpLayer();
+    forecastRows = [];
+    forecastStep = null;
     activeModel = next;
+    if (next === 'flood') {
+      stopNwpPoll();
+      applyFlood();
+      floodPoll = setInterval(() => applyFlood(), ECMWF_POLL_MS);
+    }
+    if (next === 'landslide') {
+      stopNwpPoll();
+      applyLandslide();
+      landslidePoll = setInterval(() => applyLandslide(), ECMWF_POLL_MS);
+    }
 
     if (windOverlay) {
       if (next && GLOBAL_MODELS.includes(next) && windActive) {
@@ -893,6 +1148,45 @@
       currentOpacity={satelliteData?.opacity ?? 0.9}
       onSelect={applySatellite}
       onClose={() => (showSatelliteModal = false)}
+    />
+  {/if}
+
+  {#if activeModel === 'landslide' && landslideError}
+    <div class="fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-red-950/90 text-red-200 text-xs rounded-xl border border-red-700/60 shadow-xl backdrop-blur-md flex items-center gap-2">
+      <span class="w-2 h-2 rounded-full bg-red-500"></span>
+      <span>{landslideError}</span>
+    </div>
+  {/if}
+
+  {#if activeModel === 'landslide' && landslideMeta}
+    <LandslideLegend
+      metadata={landslideMeta}
+      step={forecastStep}
+      opacity={landslideOpacity}
+      visible={landslideVisible}
+      onChangeOpacity={changeLandslideOpacity}
+      onToggleVisibility={toggleLandslideVisibility}
+      onClose={() => handleSelectModel('landslide')}
+    />
+  {/if}
+
+  {#if activeModel === 'flood'}
+    <FloodLegend metadata={floodMeta} step={forecastStep} error={floodError} notice={floodNotice}
+      opacity={floodOpacity} visible={floodVisible} indicator={floodIndicator} mode={floodMode}
+      onIndicator={(value) => { floodIndicator = value; renderFlood(); }}
+      onMode={(value) => { floodMode = value; clearFlood(); renderFlood(); }}
+      onOpacity={(value) => { floodOpacity = value; if (map?.getLayer('flood-layer')) map.setPaintProperty('flood-layer', 'raster-opacity', value); }}
+      onVisibility={() => { floodVisible = !floodVisible; floodRequest?.abort(); renderFlood(); if (floodVisible) applyFlood(); }}
+      onClose={() => handleSelectModel('flood')}/>
+  {/if}
+
+  {#if (GLOBAL_MODELS.includes(activeModel) || activeModel === 'landslide' || activeModel === 'flood') && forecastRows.length > 0}
+    <ForecastControl
+      rows={forecastRows}
+      selected={forecastStep}
+      runTime={forecastRunTime}
+      notice={timelineNotice}
+      onchange={changeForecastStep}
     />
   {/if}
 </main>

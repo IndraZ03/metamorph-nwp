@@ -32,6 +32,26 @@ function sendJson(res, obj, status = 200) {
   res.end(body);
 }
 
+function landslideProxy() {
+  const origin = process.env.NWP_API_ORIGIN || 'http://127.0.0.1:8000';
+  return async (req, res, next) => {
+    if (!['/api/landslide/forecast/', '/api/flood/forecast/'].some((prefix) => req.url?.startsWith(prefix))) return next();
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      sendJson(res, { detail: 'Method not allowed' }, 405);
+      return;
+    }
+    try {
+      const response = await fetch(new URL(req.url, origin), { signal: AbortSignal.timeout(15000) });
+      res.statusCode = response.status;
+      res.setHeader('Content-Type', response.headers.get('content-type') || 'application/json');
+      res.setHeader('Cache-Control', response.headers.get('cache-control') || 'no-store');
+      res.end(req.method === 'HEAD' ? undefined : Buffer.from(await response.arrayBuffer()));
+    } catch {
+      sendJson(res, { detail: 'API indikator bencana belum tersedia. Jalankan backend FastAPI.' }, 503);
+    }
+  };
+}
+
 function sendFile(res, target, { missingWebp = false, cache } = {}) {
   fs.stat(target, (err, st) => {
     if (err || !st.isFile()) {
@@ -181,9 +201,11 @@ export default defineConfig({
     {
       name: 'nwp-tiles',
       configureServer(server) {
+        server.middlewares.use(landslideProxy());
         server.middlewares.use(nwpStatic());
       },
       configurePreviewServer(server) {
+        server.middlewares.use(landslideProxy());
         server.middlewares.use(nwpStatic());
       },
     },
