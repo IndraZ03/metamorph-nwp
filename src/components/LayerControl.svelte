@@ -1,20 +1,28 @@
 <script>
   import { legendCss, legendFor } from '../services/nwp.js';
+  import { formatWibShort } from '../services/numericTiles.js';
+  import { SPARTAN_CLASSES, spartanRangeLabel } from '../services/spartan.js';
 
   let {
     radarData = null,
     satelliteData = null,
     nwpData = null,
+    spartanData = null,
     onCloseRadar,
     onCloseSatellite,
     onCloseNwp,
-    onChangeRadarFrame,
+    onCloseSpartan,
     onChangeSatelliteBaserun,
   } = $props();
 
   function nwpLegend() {
     if (!nwpData?.modelId || !nwpData?.varId) return null;
     return legendFor(nwpData.modelId, nwpData.varId);
+  }
+
+  function satTime(br) {
+    const t = String(br || '').split('T')[1] || '';
+    return t.substring(0, 5) || br;
   }
 
   const RADAR_LEVELS = [
@@ -35,153 +43,215 @@
   ];
 </script>
 
-<div class="fixed bottom-6 left-6 z-40 flex flex-col gap-3 max-w-sm">
-  <!-- Active Layers Panel -->
-  {#if radarData || satelliteData || nwpData}
-    <div class="p-3.5 rounded-2xl bg-white border border-slate-200 shadow-xl space-y-3">
-      <div class="flex items-center justify-between text-xs font-bold text-slate-700 uppercase tracking-wider">
-        <span>Lapisan Aktif</span>
-      </div>
-
-      <!-- Radar Active Item -->
-      {#if radarData}
-        <div class="p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col gap-2">
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-2">
-              <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
-              <span class="text-xs font-semibold text-slate-900">Radar {radarData.site.label}</span>
-              <span class="text-[10px] px-1.5 py-0.2 rounded bg-sky-100 font-mono text-sky-800 font-bold">CMAX</span>
-            </div>
-            <button
-              onclick={onCloseRadar}
-              class="w-6 h-6 rounded flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-slate-200 transition-colors"
-              title="Hapus Radar"
-            >
-              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M18 6L6 18M6 6l12 12" />
-              </svg>
-            </button>
+{#if radarData || satelliteData || nwpData || spartanData}
+  <div class="al" role="region" aria-label="Lapisan aktif">
+    {#if radarData}
+      <section class="al-row">
+        <header class="al-head">
+          <div class="al-meta">
+            <span class="al-name">Radar {radarData.site.label}</span>
+            <span class="al-sub">{radarData.currentFile || radarData.manifest?.latest?.file || 'CMAX'}</span>
           </div>
-
-          <div class="text-[11px] text-slate-600 font-mono flex items-center justify-between">
-            <span>Frame:</span>
-            <span class="text-slate-900 font-semibold">{radarData.currentFile || radarData.manifest?.latest?.file}</span>
-          </div>
-
-          <!-- Radar Reflectivity Scale Bar -->
-          <div class="space-y-1 pt-1">
-            <div class="flex justify-between text-[10px] text-slate-500 font-mono">
-              <span>5 dBZ</span>
-              <span class="font-sans font-medium text-slate-700">Reflektivitas (dBZ)</span>
-              <span>70 dBZ</span>
-            </div>
-            <div class="h-2 rounded flex overflow-hidden border border-slate-300">
-              {#each RADAR_LEVELS as lvl}
-                <div class="flex-1 h-full" style="background-color: {lvl.color};" title="{lvl.dbz} dBZ"></div>
-              {/each}
-            </div>
-          </div>
+          <button type="button" class="al-x" onclick={onCloseRadar} title="Tutup radar" aria-label="Tutup radar">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
+          </button>
+        </header>
+        <div class="al-bar" title="Reflektivitas dBZ">
+          {#each RADAR_LEVELS as lvl}
+            <i style="background:{lvl.color}"></i>
+          {/each}
         </div>
-      {/if}
+        <div class="al-scale"><span>5</span><span>dBZ</span><span>70</span></div>
+      </section>
+    {/if}
 
-      <!-- Satellite Active Item -->
-      {#if satelliteData}
-        <div class="p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col gap-2">
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-2">
-              <span class="w-2 h-2 rounded-full bg-sky-500"></span>
-              <span class="text-xs font-semibold text-slate-900">{satelliteData.product.label}</span>
-              <span class="text-[10px] px-1.5 py-0.2 rounded bg-indigo-100 font-mono text-indigo-800 font-bold">TMS</span>
-            </div>
-            <button
-              onclick={onCloseSatellite}
-              class="w-6 h-6 rounded flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-slate-200 transition-colors"
-              title="Hapus Satelit"
-            >
-              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M18 6L6 18M6 6l12 12" />
-              </svg>
-            </button>
+    {#if satelliteData}
+      <section class="al-row">
+        <header class="al-head">
+          <div class="al-meta">
+            <span class="al-name">{satelliteData.product.label}</span>
+            <span class="al-sub">{satelliteData.currentBaserun}</span>
           </div>
-
-          <div class="text-[11px] text-slate-600 font-mono flex items-center justify-between">
-            <span>Waktu UTC:</span>
-            <span class="text-slate-900 font-semibold">{satelliteData.currentBaserun}</span>
+          <button type="button" class="al-x" onclick={onCloseSatellite} title="Tutup satelit" aria-label="Tutup satelit">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
+          </button>
+        </header>
+        {#if satelliteData.baseruns?.length}
+          <div class="al-frames">
+            {#each satelliteData.baseruns.slice(0, 6) as br}
+              <button
+                type="button"
+                class="al-frame"
+                class:on={satelliteData.currentBaserun === br}
+                onclick={() => onChangeSatelliteBaserun(br)}
+              >
+                {satTime(br)}
+              </button>
+            {/each}
           </div>
+        {/if}
+      </section>
+    {/if}
 
-          <!-- Time Step Selector -->
-          {#if satelliteData.baseruns?.length}
-            <div class="space-y-1 pt-1">
-              <div class="text-[10px] text-slate-500 font-medium">Pilih frame waktu:</div>
-              <div class="flex gap-1 overflow-x-auto pb-1 max-w-full">
-                {#each satelliteData.baseruns.slice(0, 6) as br}
-                  {@const timeStr = br.split('T')[1].substring(0, 5)}
-                  <button
-                    onclick={() => onChangeSatelliteBaserun(br)}
-                    class="px-2 py-1 rounded text-[10px] font-mono whitespace-nowrap transition-colors {satelliteData.currentBaserun === br ? 'bg-sky-600 text-white font-bold shadow-sm' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'}"
-                  >
-                    {timeStr}
-                  </button>
-                {/each}
-              </div>
-            </div>
-          {/if}
+    {#if spartanData}
+      <section class="al-row">
+        <header class="al-head">
+          <div class="al-meta">
+            <span class="al-name">SPARTAN {spartanData.product.code}</span>
+            <span class="al-sub">{spartanRangeLabel(spartanData.startDate, spartanData.endDate)}</span>
+          </div>
+          <button type="button" class="al-x" onclick={onCloseSpartan} aria-label="Tutup SPARTAN">×</button>
+        </header>
+        <div class="al-bar" title="Bahaya Kebakaran">
+          {#each SPARTAN_CLASSES as cls}
+            <i style="background:{cls.color}" title={cls.label}></i>
+          {/each}
         </div>
-      {/if}
+        <div class="al-scale"><span>Rendah</span><span>Bahaya Kebakaran</span><span>Ekstrem</span></div>
+      </section>
+    {/if}
 
-      {#if nwpData}
-        {@const legend = nwpLegend()}
-        <div class="p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col gap-2">
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-2">
-              <span class="w-2 h-2 rounded-full bg-amber-500"></span>
-              <span class="text-xs font-semibold text-slate-900">{nwpData.title}</span>
-              <span class="text-[10px] px-1.5 py-0.2 rounded bg-amber-100 font-mono text-amber-800 font-bold">{nwpData.badge}</span>
-            </div>
-            <button
-              onclick={onCloseNwp}
-              class="w-6 h-6 rounded flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-slate-200 transition-colors"
-              title="Hapus {nwpData.title}"
-            >
-              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M18 6L6 18M6 6l12 12" />
-              </svg>
-            </button>
+    {#if nwpData}
+      {@const legend = nwpLegend()}
+      <section class="al-row">
+        <header class="al-head">
+          <div class="al-meta">
+            <span class="al-name">{nwpData.title}</span>
+            <span class="al-sub">
+              {#if nwpData.runTime}Run {formatWibShort(nwpData.runTime)}{/if}
+              {#if nwpData.validTime}<span class="al-dot">·</span> Valid {formatWibShort(nwpData.validTime)}{/if}
+            </span>
           </div>
-
-          <div class="text-[11px] text-slate-600 font-mono flex flex-col gap-0.5">
-            <div class="flex items-center justify-between">
-              <span>Run:</span>
-              <span class="text-slate-900 font-semibold">{nwpData.runTime}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span>Valid:</span>
-              <span class="text-slate-900 font-semibold">{nwpData.validTime}</span>
-            </div>
+          <button type="button" class="al-x" onclick={onCloseNwp} title="Tutup {nwpData.title}" aria-label="Tutup {nwpData.title}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
+          </button>
+        </header>
+        {#if legend}
+          <div class="al-bar" style="background:{legendCss(nwpData.modelId, nwpData.varId)}"></div>
+          <div class="al-scale">
+            <span>{legend.min}{legend.units ? ` ${legend.units}` : ''}</span>
+            <span>{legend.label}</span>
+            <span>{legend.max}{legend.units ? ` ${legend.units}` : ''}</span>
           </div>
+        {/if}
+      </section>
+    {/if}
+  </div>
+{/if}
 
-          {#if legend}
-            <div class="space-y-1 pt-1">
-              <div class="flex justify-between text-[10px] text-slate-500 font-mono">
-                <span>{legend.min}{legend.units ? ` ${legend.units}` : ''}</span>
-                <span class="font-sans font-medium text-slate-700">{legend.label}</span>
-                <span>{legend.max}{legend.units ? ` ${legend.units}` : ''}</span>
-              </div>
-              <div
-                class="h-2 rounded overflow-hidden border border-slate-300"
-                style="background: {legendCss(nwpData.modelId, nwpData.varId)};"
-              ></div>
-              {#if legend.ticks}
-                <div class="flex justify-between text-[9px] text-slate-400 font-mono">
-                  {#each legend.ticks as tick}
-                    <span>{tick}</span>
-                  {/each}
-                </div>
-              {/if}
-            </div>
-          {/if}
-        </div>
-      {/if}
-    </div>
-  {/if}
-</div>
+<style>
+  .al {
+    width: 252px;
+    padding: 6px;
+    border-radius: 12px;
+    background: rgba(14, 16, 20, 0.55);
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    backdrop-filter: blur(18px) saturate(1.2);
+    -webkit-backdrop-filter: blur(18px) saturate(1.2);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.32);
+    color: #f4f4f5;
+  }
+  .al-row + .al-row {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .al-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .al-meta {
+    flex: 1;
+    min-width: 0;
+  }
+  .al-name {
+    display: block;
+    font-size: 12px;
+    font-weight: 560;
+    letter-spacing: -0.01em;
+    line-height: 1.25;
+    color: #fafafa;
+  }
+  .al-sub {
+    display: block;
+    margin-top: 2px;
+    font-size: 10px;
+    line-height: 1.35;
+    color: rgba(244, 244, 245, 0.58);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .al-dot {
+    margin: 0 0.3em;
+    opacity: 0.55;
+  }
+  .al-x {
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    margin-top: -1px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: rgba(244, 244, 245, 0.45);
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+  }
+  .al-x:hover {
+    color: #fafafa;
+    background: rgba(255, 255, 255, 0.08);
+  }
+  .al-x svg {
+    width: 12px;
+    height: 12px;
+  }
+  .al-bar {
+    display: flex;
+    height: 4px;
+    margin-top: 8px;
+    overflow: hidden;
+    border-radius: 999px;
+  }
+  .al-bar i {
+    flex: 1;
+    display: block;
+  }
+  .al-scale {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 4px;
+    font-size: 9px;
+    color: rgba(244, 244, 245, 0.45);
+    font-variant-numeric: tabular-nums;
+  }
+  .al-frames {
+    display: flex;
+    gap: 4px;
+    margin-top: 8px;
+    overflow-x: auto;
+  }
+  .al-frame {
+    flex: 1;
+    min-width: 0;
+    padding: 3px 0;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    background: transparent;
+    color: rgba(244, 244, 245, 0.7);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    cursor: pointer;
+  }
+  .al-frame:hover {
+    color: #fff;
+    border-color: rgba(255, 255, 255, 0.22);
+  }
+  .al-frame.on {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.22);
+  }
+</style>

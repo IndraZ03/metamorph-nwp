@@ -5,7 +5,7 @@ export const ECMWF_DEFAULT_VAR = 't2m';
 export const GLOBAL_MODELS = ['ecmwf'];
 
 export const ECMWF_PARAMS = [
-  { id: 't2m', label: 'Temperature', short: 'T', units: '°C' },
+  { id: 't2m', label: 'Temperature', short: 'Temp', units: '°C' },
   { id: 'wind10m', label: 'Wind Speed', short: 'Wind', units: 'm/s' },
   { id: 'rh', label: 'Relative Humidity', short: 'RH', units: '%' },
   { id: 'tp', label: 'Rain accumulation', short: 'Rain', units: 'mm' },

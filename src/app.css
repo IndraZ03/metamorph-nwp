@@ -27,14 +27,24 @@ html, body, #app {
 }
 
 .nwp-inspect-popup .maplibregl-popup-content {
-  padding: 10px 12px 12px;
-  border-radius: 12px;
+  padding: 8px 10px 9px;
+  border-radius: 10px;
   box-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
   border: 1px solid #e2e8f0;
 }
 .nwp-inspect-popup .maplibregl-popup-close-button {
-  font-size: 16px;
-  color: #64748b;
+  font-size: 14px;
+  width: 18px;
+  height: 18px;
+  line-height: 16px;
+  right: 4px;
+  top: 4px;
+  color: #94a3b8;
+}
+
+.nwp-timeline-on .maplibregl-ctrl-bottom-right,
+.nwp-timeline-on .maplibregl-ctrl-bottom-left {
+  bottom: 96px;
 }
 
 /* Modern Glassmorphism Range Slider */
@@ -74,4 +84,3 @@ input[type='range'].modern-slider::-moz-range-thumb {
   box-shadow: 0 0 12px rgba(37, 99, 235, 0.8), 0 2px 4px rgba(0, 0, 0, 0.3);
   cursor: pointer;
 }
-

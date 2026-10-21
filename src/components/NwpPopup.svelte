@@ -1,5 +1,45 @@
 <script>
-  let { data, loading = false, error = null } = $props();
+  import {
+    Cloud,
+    CloudRain,
+    Droplet,
+    Droplets,
+    Gauge,
+    Thermometer,
+    Wind,
+    Zap,
+  } from 'lucide-svelte';
+  import { formatWibShort } from '../services/numericTiles.js';
+  import { inspectPop } from '../services/inspectPop.svelte.js';
+
+  let data = $derived(inspectPop.data);
+  let loading = $derived(inspectPop.loading);
+  let error = $derived(inspectPop.error);
+
+  const ICONS = {
+    t2m: Thermometer,
+    temperature: Thermometer,
+    t_2m: Thermometer,
+    d2m: Droplet,
+    dew_point: Droplet,
+    td_2m: Droplet,
+    wind10m: Wind,
+    wind: Wind,
+    wind_10m: Wind,
+    rh: Droplets,
+    relhum_2m: Droplets,
+    tp: CloudRain,
+    rain: CloudRain,
+    tot_prec: CloudRain,
+    msl: Gauge,
+    pressure: Gauge,
+    pmsl: Gauge,
+    cape: Zap,
+    cape_ml: Zap,
+    tcc: Cloud,
+    clouds: Cloud,
+    clct: Cloud,
+  };
 
   function locLine(loc) {
     if (!loc) return '';
@@ -8,30 +48,38 @@
     );
     return parts.join(', ') || loc.display_name || '';
   }
+
+  function iconFor(id) {
+    return ICONS[id] || Thermometer;
+  }
 </script>
 
 <div class="nwp-pop">
   {#if error}
     <div class="nwp-pop-err">{error}</div>
   {:else if data}
-    <div class="nwp-pop-kicker">{data.modelTitle || 'NWP'}</div>
-    <div class="nwp-pop-title">{locLine(data.lokasi) || 'Titik peta'}</div>
-    <div class="nwp-pop-meta">
-      {data.lat?.toFixed(4)}, {data.lon?.toFixed(4)}
+    <div class="nwp-pop-head">
+      <span class="nwp-pop-kicker">{data.modelTitle || 'NWP'}</span>
+      <span class="nwp-pop-title">{locLine(data.lokasi) || 'Titik peta'}</span>
+      <span class="nwp-pop-coord">{data.lat?.toFixed(3)}, {data.lon?.toFixed(3)}</span>
     </div>
-    {#if data.tanggal}
-      <div class="nwp-pop-meta">{data.tanggal}</div>
-    {/if}
-    {#if data.runTime}
-      <div class="nwp-pop-meta">Run {data.runTime} · valid {data.validTime}</div>
+    {#if data.runTime || data.validTime}
+      <div class="nwp-pop-times">
+        <span><em>Run</em> {formatWibShort(data.runTime)}</span>
+        <span><em>Valid</em> {formatWibShort(data.validTime)}</span>
+      </div>
     {/if}
     {#if loading && !Object.keys(data.nilai || {}).length}
       <div class="nwp-pop-muted">Membaca nilai…</div>
     {:else}
       <dl class="nwp-pop-vals">
-        {#each Object.values(data.nilai || {}) as row}
-          <div class="nwp-pop-row" class:active={row.id === data.varId}>
-            <dt>{row.name}</dt>
+        {#each Object.values(data.nilai || {}) as row (row.id)}
+          {@const Icon = iconFor(row.id)}
+          <div class="nwp-pop-row" class:active={row.id === data.varId} title={row.name}>
+            <dt>
+              <Icon size={13} strokeWidth={2.2} />
+              <span>{row.short || row.name}</span>
+            </dt>
             <dd>{row.display}</dd>
           </div>
         {/each}
@@ -44,45 +92,83 @@
 
 <style>
   .nwp-pop {
-    min-width: 220px;
-    max-width: 280px;
-    padding-right: 14px;
+    min-width: 196px;
+    max-width: 228px;
+    padding-right: 10px;
     font-family: Inter, system-ui, sans-serif;
   }
+  .nwp-pop-head {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding-right: 8px;
+  }
   .nwp-pop-kicker {
-    font-size: 10px;
+    font-size: 9px;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: #0369a1;
-    margin-bottom: 2px;
   }
   .nwp-pop-title {
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 650;
     color: #0f172a;
-    line-height: 1.3;
+    line-height: 1.25;
   }
-  .nwp-pop-meta {
-    font-size: 11px;
+  .nwp-pop-coord {
+    font-size: 10px;
     font-family: 'JetBrains Mono', ui-monospace, monospace;
+    color: #94a3b8;
+  }
+  .nwp-pop-times {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+    margin-top: 6px;
+    padding: 4px 6px;
+    border-radius: 7px;
+    background: #f1f5f9;
+    font-size: 10px;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    color: #0f172a;
+    line-height: 1.25;
+  }
+  .nwp-pop-times em {
+    display: block;
+    font-style: normal;
+    font-family: Inter, system-ui, sans-serif;
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
     color: #64748b;
-    margin-top: 2px;
   }
   .nwp-pop-vals {
-    margin: 8px 0 0;
+    margin: 7px 0 0;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 2px;
   }
   .nwp-pop-row {
     display: flex;
     justify-content: space-between;
-    gap: 12px;
-    font-size: 12px;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    line-height: 1;
+    padding: 2px 0;
   }
   .nwp-pop-row dt {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     color: #475569;
+    font-weight: 600;
+  }
+  .nwp-pop-row dt :global(svg) {
+    flex-shrink: 0;
+    color: #64748b;
   }
   .nwp-pop-row dd {
     margin: 0;
@@ -95,10 +181,14 @@
   .nwp-pop-row.active dd {
     color: #0369a1;
   }
+  .nwp-pop-row.active dt :global(svg) {
+    color: #0369a1;
+  }
   .nwp-pop-muted,
   .nwp-pop-err {
     font-size: 12px;
     color: #64748b;
+    margin-top: 6px;
   }
   .nwp-pop-err {
     color: #be123c;

@@ -48,6 +48,49 @@ def _manifest_path(run: datetime) -> str:
     return os.path.join(_run_dir(run), "manifest.json")
 
 
+def _load_manifest(run: datetime) -> dict | None:
+    path = _manifest_path(run)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except Exception:
+        return None
+
+
+def _hour_has_keys(run: datetime, forecast_hour: int, keys: list[str]) -> bool:
+    valid_name = source.valid_dir_name(run, forecast_hour)
+    root = os.path.join(
+        config.NUMERIC_TILE_DIR, "gfs", source.run_dir_name(run), valid_name
+    )
+    for key in keys:
+        var_dir = os.path.join(root, key)
+        if not os.path.isdir(var_dir):
+            return False
+        found = False
+        for _dirpath, _dirnames, filenames in os.walk(var_dir):
+            if any(name.endswith(".webp") for name in filenames):
+                found = True
+                break
+        if not found:
+            return False
+    return True
+
+
+def _ordered_timesteps(hours: list[int], by_hour: dict[int, dict]) -> list[dict]:
+    ordered = []
+    seen = set()
+    for fh in hours:
+        rec = by_hour.get(fh)
+        if rec is not None:
+            ordered.append(rec)
+            seen.add(fh)
+    for fh in sorted(h for h in by_hour if h not in seen):
+        ordered.append(by_hour[fh])
+    return ordered
+
+
 def _is_complete(run: datetime, expected: int) -> bool:
     path = _manifest_path(run)
     if not os.path.exists(path):
@@ -141,52 +184,88 @@ def _cleanup_old_runs(keep: int = config.RETENTION_RUNS) -> list[str]:
 
 def process_run(run: datetime, max_hours: int | None = None,
                  forecast_list: list[int] | None = None,
-                 force: bool = False) -> dict:
-    """Process one GFS run end-to-end. Returns the manifest dict."""
+                 force: bool = False,
+                 keys: list[str] | None = None) -> dict:
+    """Process one GFS run end-to-end. Returns the manifest dict.
+
+    ``keys`` limits fetch/decode/render (e.g. ``['u10','v10','wind']``) and
+    merges into an existing run instead of rebuilding every variable.
+    """
     hours = forecast_list if forecast_list is not None else config.forecast_hours()
     if max_hours is not None:
         hours = [h for h in hours if h <= max_hours]
-    if not force and _is_complete(run, len(hours)):
+    existing = _load_manifest(run)
+    by_hour: dict[int, dict] = {
+        int(t["forecast_hour"]): t
+        for t in (existing or {}).get("timesteps", [])
+        if "forecast_hour" in t
+    }
+    grib_keys = None if keys is None else [k for k in keys if k in decode.WANTED]
+    check_keys = [k for k in (keys or []) if k != "wind"]
+    if not force and keys is None and _is_complete(run, len(hours)):
         print(f"run {source.run_dir_name(run)} already complete, skipping")
-        with open(_manifest_path(run)) as fh:
-            return json.load(fh)
+        return existing
+    if (
+        not force
+        and keys is not None
+        and check_keys
+        and hours
+        and all(_hour_has_keys(run, fh, check_keys) for fh in hours)
+    ):
+        print(f"run {source.run_dir_name(run)} already has {','.join(check_keys)}, skipping")
+        return existing or _load_manifest(run)
 
     os.makedirs(config.TMP_DIR, exist_ok=True)
-    timesteps: list[dict] = []
     t_start = time.time()
     for chunk_start in range(0, len(hours), config.CHUNK_TIMESTEPS):
         chunk = hours[chunk_start:chunk_start + config.CHUNK_TIMESTEPS]
         for fh in chunk:
+            if not force and check_keys and _hour_has_keys(run, fh, check_keys):
+                print(f"  f{fh:03d} {','.join(check_keys)} already present, skip")
+                continue
             raw_path = os.path.join(config.TMP_DIR, f"gfs_{source.run_dir_name(run)}_f{fh:03d}.grb2")
             try:
-                meta = source.download_timestep(run, fh, raw_path)
-                grids = decode.decode_timestep(raw_path)
+                meta = source.download_timestep(run, fh, raw_path, keys=grib_keys)
+                grids = decode.decode_timestep(raw_path, keys=keys)
                 valid_name = source.valid_dir_name(run, fh)
                 out_root = os.path.join(_run_dir(run), valid_name)
                 num_root = os.path.join(
                     config.NUMERIC_TILE_DIR, "gfs", source.run_dir_name(run), valid_name
                 )
-                counts = render.render_timestep(grids, out_root, num_root)
-                timesteps.append({
-                    "forecast_hour": fh,
-                    "valid": _fmt(source.valid_time(run, fh)),
-                    "rain_step_range": meta.get("rain_step_range"),
-                    "tiles": counts,
-                })
+                counts = render.render_timestep(grids, out_root, num_root, keys=keys)
+                rec = dict(by_hour.get(fh) or {})
+                rec["forecast_hour"] = fh
+                rec["valid"] = _fmt(source.valid_time(run, fh))
+                if meta.get("rain_step_range"):
+                    rec["rain_step_range"] = meta.get("rain_step_range")
+                rec["tiles"] = {**(rec.get("tiles") or {}), **counts}
+                rec.pop("error", None)
+                by_hour[fh] = rec
                 print(f"  f{fh:03d} valid={_fmt(source.valid_time(run, fh))} "
                       f"tiles={sum(counts.values())} bytes={meta['bytes']}")
             except Exception as e:
                 print(f"  f{fh:03d} FAILED: {e}")
-                timesteps.append({"forecast_hour": fh,
-                                  "valid": _fmt(source.valid_time(run, fh)),
-                                  "error": str(e)})
+                if fh not in by_hour:
+                    by_hour[fh] = {
+                        "forecast_hour": fh,
+                        "valid": _fmt(source.valid_time(run, fh)),
+                        "error": str(e),
+                    }
             finally:
                 if os.path.exists(raw_path):
                     os.remove(raw_path)
-        # progress manifest after every chunk (resumable)
-        _write_manifest(run, timesteps, status="partial")
+        _write_manifest(run, _ordered_timesteps(hours, by_hour), status="partial")
 
-    manifest = _write_manifest(run, timesteps, status="complete")
+    timesteps = _ordered_timesteps(hours, by_hour)
+    status = (
+        "complete"
+        if hours and all(
+            t.get("forecast_hour") in by_hour and "error" not in by_hour[t["forecast_hour"]]
+            for t in ({"forecast_hour": h} for h in hours)
+        )
+        else "partial"
+    )
+    manifest = _write_manifest(run, timesteps, status=status)
     _update_latest(run, manifest)
     removed = _cleanup_old_runs()
     print(f"done run {source.run_dir_name(run)} in {time.time() - t_start:.0f}s; "
@@ -194,12 +273,13 @@ def process_run(run: datetime, max_hours: int | None = None,
     return manifest
 
 
-def run_auto(max_hours: int | None = None, force: bool = False) -> dict:
+def run_auto(max_hours: int | None = None, force: bool = False,
+             keys: list[str] | None = None) -> dict:
     """Find the latest available run and process it (idempotent)."""
     with _lock():
         run = source.find_latest_run()
         print(f"latest run: {source.run_dir_name(run)} ({_fmt(run)})")
-        return process_run(run, max_hours=max_hours, force=force)
+        return process_run(run, max_hours=max_hours, force=force, keys=keys)
 
 
 def list_runs() -> list[dict]:

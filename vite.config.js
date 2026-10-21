@@ -97,7 +97,8 @@ function nwpStatic() {
         res.end('Forbidden');
         return;
       }
-      sendFile(res, target, { missingWebp: url.endsWith('.webp') });
+      const numeric = url.startsWith('/ecmwf/numeric/');
+      sendFile(res, target, { missingWebp: url.endsWith('.webp') && !numeric });
       return;
     }
 
@@ -144,7 +145,7 @@ function nwpStatic() {
         res.end('Forbidden');
         return;
       }
-      sendFile(res, target, { missingWebp: true });
+      sendFile(res, target);
       return;
     }
 
@@ -187,7 +188,7 @@ function nwpStatic() {
         res.end('Forbidden');
         return;
       }
-      sendFile(res, target, { missingWebp: true });
+      sendFile(res, target);
       return;
     }
 
@@ -285,6 +286,48 @@ export default defineConfig({
             res.statusCode = upstream.status;
             res.setHeader('Content-Type', 'application/json; charset=utf-8');
             res.setHeader('Cache-Control', 'public, max-age=86400');
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            const arrayBuffer = await upstream.arrayBuffer();
+            res.end(Buffer.from(arrayBuffer));
+          } catch (e) {
+            res.statusCode = 502;
+            res.end(String(e));
+          }
+        });
+
+        // SPARTAN fire-weather tiles (BMKG): /api/proxy-spartan-tile/{z}/{x}/{y}.png?product=fwi&start=YYYYMMDD0000&end=YYYYMMDD0000
+        // Upstream pattern verified 2026-10-18: https://spartan.bmkg.go.id/map/rgb_req/spartan/{product}/0/{start}/{end}/{z}/{x}/{y}.png
+        // Tiles are TMS (y origin at south), pre-coloured 4-class raster, aggregated over [start, end], max range 7 days.
+        const SPARTAN_PRODUCTS = new Set(['ffmc', 'dmc', 'dc', 'isi', 'bui', 'fwi']);
+        server.middlewares.use('/api/proxy-spartan-tile', async (req, res) => {
+          try {
+            const reqUrl = new URL(req.url, 'http://localhost');
+            const m = reqUrl.pathname.match(/(\d+)\/(\d+)\/(\d+)\.png$/);
+            const product = reqUrl.searchParams.get('product');
+            const start = reqUrl.searchParams.get('start');
+            const end = reqUrl.searchParams.get('end');
+            if (
+              !m ||
+              !SPARTAN_PRODUCTS.has(product) ||
+              !/^\d{12}$/.test(start || '') ||
+              !/^\d{12}$/.test(end || '')
+            ) {
+              res.statusCode = 400;
+              res.end('Invalid SPARTAN tile request');
+              return;
+            }
+            const [, z, x, y] = m;
+            const targetUrl = `https://spartan.bmkg.go.id/map/rgb_req/spartan/${product}/0/${start}/${end}/${z}/${x}/${y}.png`;
+            const upstream = await fetch(targetUrl, {
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': 'https://spartan.bmkg.go.id/',
+                'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+              },
+            });
+            res.statusCode = upstream.status;
+            res.setHeader('Content-Type', upstream.headers.get('content-type') || 'image/png');
+            res.setHeader('Cache-Control', 'public, max-age=3600');
             res.setHeader('Access-Control-Allow-Origin', '*');
             const arrayBuffer = await upstream.arrayBuffer();
             res.end(Buffer.from(arrayBuffer));

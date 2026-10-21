@@ -5,8 +5,9 @@
   import ParamToolbar from './components/ParamToolbar.svelte';
   import RadarModal from './components/RadarModal.svelte';
   import SatelliteModal from './components/SatelliteModal.svelte';
-  import LayerControl from './components/LayerControl.svelte';
+  import SpartanModal from './components/SpartanModal.svelte';
   import UserLayers from './components/UserLayers.svelte';
+  import DrawingSidebar from './components/DrawingSidebar.svelte';
   import NwpPopup from './components/NwpPopup.svelte';
   import { proxyCuaca, proxySatelliteTile } from './services/bmkg.js';
   import {
@@ -19,12 +20,17 @@
     modelRunId,
     modelRunTime,
     modelZoom,
-    paramsFor,
+    paramsAvailable,
+    availableVars,
+    listSteps as listNwpSteps,
+    nearestStep,
     pickStep as pickNwpStep,
     sourceKey as nwpSourceKey,
     tileUrl as nwpTileUrl,
   } from './services/nwp.js';
+  import ForecastTimeline from './components/ForecastTimeline.svelte';
   import { inspectValues, reverseGeocode } from './services/numericTiles.js';
+  import { inspectPop } from './services/inspectPop.svelte.js';
   import { bboxOf, colorFor, countByGeometry, layerDefs } from './services/userLayers.js';
   import { WindOverlay } from './services/windAnimation.js';
   import ForecastControl from './components/ForecastControl.svelte';
@@ -33,6 +39,14 @@
   import FloodLegend from './components/FloodLegend.svelte';
   import { fetchFloodMetadata, floodTileUrl, fetchFloodPoint, pointContent as floodPointContent } from './services/flood.js';
   import { fetchLandslideMetadata, landslideTileUrl, fetchLandslidePoint, pointContent } from './services/landslide.js';
+  import { DrawingController } from './services/drawing/controller.js';
+  import {
+    drawing,
+    hydrate as hydrateDrawings,
+    setLayerVisible,
+    toggleSidebar,
+  } from './services/drawing/store.svelte.js';
+  import { spartanTileTemplate } from './services/spartan.js';
 
   // State management using Svelte 5 runes
   let mapContainer = $state(null);
@@ -42,10 +56,12 @@
   // Modals visibility
   let showRadarModal = $state(false);
   let showSatelliteModal = $state(false);
+  let showSpartanModal = $state(false);
 
   // Active layer records
   let radarData = $state(null);
   let satelliteData = $state(null);
+  let spartanData = $state(null);
   let activeModel = $state(null);
   let nwpVar = $state(defaultVar('ecmwf'));
   let nwpData = $state(null);
@@ -57,13 +73,27 @@
   let nwpPopupApp = null;
   let nwpHost = null;
   let nwpClickSeq = 0;
-  let nwpPop = $state({ loading: false, data: null, error: null });
+  let nwpManifest = $state(null);
+  let nwpSteps = $state([]);
+  let nwpStepToken = $state(null);
+  let nwpPlaying = $state(false);
+  let nwpLoop = $state(false);
+  let nwpWantValid = null;
+  let nwpSlot = 0;
+  let nwpPlayTimer = null;
+  let nwpPlayWait = null;
+  let nwpSeekGen = 0;
+  let nwpPendingGen = 0;
+  let nwpPendingToken = null;
+  const NWP_OPACITY = 0.85;
+  const NWP_PLAY_MS = 700;
+  const NWP_LOAD_MS = 2500;
 
   // Wind animation state
   let windActive = $state(false);
   let windSpeed = $state(1.0);
   let windOverlay = null;
-  let windStatus = $state({ state: 'ready', mode: 'demo', message: 'Simulasi — bukan data model' });
+  let windStatus = $state({ state: 'ready', mode: 'unavailable', message: 'Data U/V belum dimuat' });
 
   let forecastRows = $state([]);
   let forecastStep = $state(null);
@@ -271,6 +301,7 @@
   // User overlays (GeoJSON / GPX)
   let userLayers = $state([]);
   let userLayerSeq = 0;
+  let drawCtrl = null;
 
   function setupCartoBoundaries(m) {
     if (!m) return;
@@ -379,6 +410,12 @@
       mapLoaded = true;
 
       setupCartoBoundaries(m);
+      hydrateDrawings().then(() => {
+        if (drawCtrl) drawCtrl.sync();
+        else if (map) {
+          drawCtrl = new DrawingController(map);
+        }
+      });
       console.log('MapLibre GL Carto Dark Matter loaded successfully');
     });
 
@@ -386,6 +423,7 @@
       if (m.isStyleLoaded()) {
         setupCartoBoundaries(m);
         restoreUserLayers();
+        if (drawCtrl) drawCtrl.restore();
       }
     });
 
@@ -398,6 +436,7 @@
     else if (activeModel === 'landslide') renderLandslide();
     });
     m.on('click', (e) => {
+      if (drawing.sidebarOpen || drawCtrl?.blocksInspect()) return;
       if (activeModel === 'flood') handleFloodClick(e).catch(console.warn);
       else if (activeModel === 'landslide') handleLandslideClick(e).catch(console.warn);
       else handleNwpClick(e).catch((err) => console.warn('NWP click', err));
@@ -407,7 +446,12 @@
       stopNwpPoll();
       stopFlood();
       stopLandslide();
+      stopNwpPlay();
       closeNwpPopup();
+      if (drawCtrl) {
+        drawCtrl.destroy();
+        drawCtrl = null;
+      }
       if (windOverlay) {
         windOverlay.destroy();
         windOverlay = null;
@@ -450,9 +494,9 @@
       nwpPopupApp = null;
     }
     nwpHost = null;
-    nwpPop.loading = false;
-    nwpPop.data = null;
-    nwpPop.error = null;
+    inspectPop.loading = false;
+    inspectPop.data = null;
+    inspectPop.error = null;
     if (nwpPopup) {
       const p = nwpPopup;
       nwpPopup = null;
@@ -462,19 +506,19 @@
 
   function setNwpPopupProps(lngLat, props) {
     if (!map) return;
-    nwpPop.loading = props.loading ?? false;
-    nwpPop.data = props.data ?? null;
-    nwpPop.error = props.error ?? null;
+    inspectPop.loading = props.loading ?? false;
+    inspectPop.data = props.data ?? null;
+    inspectPop.error = props.error ?? null;
     if (!nwpHost) nwpHost = document.createElement('div');
     if (!nwpPopupApp) {
-      nwpPopupApp = mount(NwpPopup, { target: nwpHost, props: nwpPop });
+      nwpPopupApp = mount(NwpPopup, { target: nwpHost });
     }
     if (!nwpPopup) {
       nwpPopup = new maplibregl.Popup({
         closeButton: true,
         closeOnClick: false,
         focusAfterOpen: false,
-        maxWidth: '300px',
+        maxWidth: '240px',
         className: 'nwp-inspect-popup',
       });
       nwpPopup.on('close', () => {
@@ -490,8 +534,11 @@
         nwpHost = null;
       });
     }
-    nwpPopup.setLngLat(lngLat).setDOMContent(nwpHost);
-    if (!nwpPopup.isOpen()) nwpPopup.addTo(map);
+    if (!nwpPopup.isOpen()) {
+      nwpPopup.setLngLat(lngLat).setDOMContent(nwpHost).addTo(map);
+    } else {
+      nwpPopup.setLngLat(lngLat);
+    }
   }
 
   async function handleNwpClick(e) {
@@ -518,7 +565,7 @@
         modelId,
         manifest,
         step,
-        params: paramsFor(modelId),
+        params: paramsAvailable(modelId, manifest),
         lat,
         lon: lng,
         zoom: map.getZoom(),
@@ -527,7 +574,7 @@
           setNwpPopupProps([lng, lat], {
             loading: true,
             error: null,
-            data: { ...base, ...partial, lokasi: nwpPop.data?.lokasi ?? null },
+            data: { ...base, ...partial, lokasi: inspectPop.data?.lokasi ?? null },
           });
         },
       });
@@ -535,7 +582,7 @@
       setNwpPopupProps([lng, lat], {
         loading: false,
         error: null,
-        data: { ...base, ...result, lokasi: nwpPop.data?.lokasi ?? null },
+        data: { ...base, ...result, lokasi: inspectPop.data?.lokasi ?? null },
       });
       const lokasi = await geoP;
       if (seq !== nwpClickSeq) return;
@@ -556,13 +603,56 @@
     }
   }
 
+  function nwpLayerId(slot) {
+    return slot ? 'nwp-layer-b' : 'nwp-layer';
+  }
+
+  function nwpSourceId(slot) {
+    return slot ? 'nwp-source-b' : 'nwp-source';
+  }
+
+  function nwpBeforeLayer() {
+    if (map.getLayer('radar-layer')) return 'radar-layer';
+    if (map.getLayer('satellite-layer')) return 'satellite-layer';
+    return overlayBeforeLayer();
+  }
+
+  function dropNwpSlot(slot) {
+    const lid = nwpLayerId(slot);
+    const sid = nwpSourceId(slot);
+    if (map.getLayer(lid)) map.removeLayer(lid);
+    if (map.getSource(sid)) map.removeSource(sid);
+  }
+
+  function stopNwpPlay() {
+    nwpPlaying = false;
+    if (nwpPlayTimer) {
+      clearTimeout(nwpPlayTimer);
+      nwpPlayTimer = null;
+    }
+    if (nwpPlayWait) {
+      const done = nwpPlayWait;
+      nwpPlayWait = null;
+      done();
+    }
+  }
+
   function removeNwpLayer() {
     if (!map) return;
+    stopNwpPlay();
     closeNwpPopup();
     nwpInspect = null;
+    nwpManifest = null;
+    nwpSteps = [];
+    nwpStepToken = null;
+    nwpWantValid = null;
+    nwpSlot = 0;
+    nwpSeekGen += 1;
+    nwpPendingGen = 0;
+    nwpPendingToken = null;
     if (map.getCanvas()) map.getCanvas().style.cursor = '';
-    if (map.getLayer('nwp-layer')) map.removeLayer('nwp-layer');
-    if (map.getSource('nwp-source')) map.removeSource('nwp-source');
+    dropNwpSlot(0);
+    dropNwpSlot(1);
     if (map.getLayer('ecmwf-layer')) map.removeLayer('ecmwf-layer');
     if (map.getSource('ecmwf-source')) map.removeSource('ecmwf-source');
     if (nwpAttribControl) {
@@ -575,6 +665,250 @@
     }
     nwpKey = null;
     nwpData = null;
+  }
+
+  function commitNwpStep(modelId, manifest, step) {
+    const spec = MODELS[modelId];
+    const varId = nwpVar || defaultVar(modelId);
+    nwpKey = nwpSourceKey(modelId, manifest, varId, step);
+    nwpInspect = { modelId, manifest, step };
+    nwpStepToken = step.token;
+    nwpWantValid = step.t ?? Date.parse(step.validTime);
+    forecastStep = Number(step.step);
+    if (map.getCanvas()) map.getCanvas().style.cursor = 'crosshair';
+    nwpData = {
+      modelId,
+      title: spec.title,
+      badge: spec.badge,
+      varId,
+      runTime: modelRunTime(modelId, manifest),
+      validTime: step.validTime,
+      runId: modelRunId(modelId, manifest),
+      step: step.step,
+    };
+    if (windOverlay && windActive) {
+      windOverlay.setContext({
+        modelId,
+        manifest,
+        step,
+        bbox: modelBbox(modelId, manifest),
+        zoom: modelZoom(modelId, manifest),
+      });
+    }
+  }
+
+  function addNwpRaster(slot, modelId, manifest, step) {
+    const spec = MODELS[modelId];
+    const varId = nwpVar || defaultVar(modelId);
+    const sid = nwpSourceId(slot);
+    const lid = nwpLayerId(slot);
+    const template = nwpTileUrl(modelId, manifest, varId, step);
+    const bbox = modelBbox(modelId, manifest);
+    const zoom = modelZoom(modelId, manifest);
+    const runTime = modelRunTime(modelId, manifest);
+    const attrib = `${manifest.attribution || spec.attribution} · run ${runTime} · valid ${step.validTime}`;
+    dropNwpSlot(slot);
+    map.addSource(sid, {
+      type: 'raster',
+      scheme: 'xyz',
+      tiles: [template],
+      tileSize: manifest.tile_size || 256,
+      minzoom: zoom.minzoom,
+      maxzoom: zoom.maxzoom,
+      bounds: bbox,
+      attribution: attrib,
+    });
+    map.addLayer(
+      {
+        id: lid,
+        type: 'raster',
+        source: sid,
+        paint: {
+          'raster-opacity': 0,
+          'raster-opacity-transition': { duration: 0, delay: 0 },
+          'raster-fade-duration': 0,
+        },
+      },
+      nwpBeforeLayer()
+    );
+    return { sid, lid, attrib };
+  }
+
+  function waitNwpSource(sid, gen, ms = NWP_LOAD_MS) {
+    return new Promise((resolve) => {
+      if (!map) {
+        resolve(false);
+        return;
+      }
+      let done = false;
+      const finish = (ok) => {
+        if (done) return;
+        done = true;
+        map.off('sourcedata', onData);
+        map.off('idle', onIdle);
+        resolve(ok && gen === nwpSeekGen);
+      };
+      const ready = () => {
+        try {
+          return map.isSourceLoaded(sid) && map.areTilesLoaded();
+        } catch {
+          return false;
+        }
+      };
+      const onData = (e) => {
+        if (e.sourceId === sid && e.isSourceLoaded && map.areTilesLoaded()) finish(true);
+      };
+      const onIdle = () => {
+        if (ready()) finish(true);
+      };
+      map.on('sourcedata', onData);
+      map.on('idle', onIdle);
+      if (ready()) {
+        finish(true);
+        return;
+      }
+      setTimeout(() => finish(ready()), ms);
+    });
+  }
+
+  function abortOwnedSlot(gen, slot) {
+    if (nwpPendingGen === gen) {
+      dropNwpSlot(slot);
+      nwpPendingGen = 0;
+      nwpPendingToken = null;
+    }
+  }
+
+  function sleepPlay(ms) {
+    return new Promise((resolve) => {
+      if (ms <= 0) {
+        resolve();
+        return;
+      }
+      nwpPlayWait = resolve;
+      nwpPlayTimer = setTimeout(() => {
+        nwpPlayTimer = null;
+        nwpPlayWait = null;
+        resolve();
+      }, ms);
+    });
+  }
+
+  function snapNwpOpacity(lid, opacity) {
+    if (!map.getLayer(lid)) return;
+    map.setPaintProperty(lid, 'raster-opacity-transition', { duration: 0, delay: 0 });
+    map.setPaintProperty(lid, 'raster-opacity', opacity);
+  }
+
+  async function prepareNwpStep(modelId, manifest, step) {
+    if (!map || !step) return null;
+    const varId = nwpVar || defaultVar(modelId);
+    const key = nwpSourceKey(modelId, manifest, varId, step);
+    if (key === nwpKey && map.getLayer(nwpLayerId(nwpSlot))) {
+      commitNwpStep(modelId, manifest, step);
+      return null;
+    }
+    if (step.token === nwpPendingToken && nwpPendingGen === nwpSeekGen) return null;
+
+    const gen = ++nwpSeekGen;
+    nwpPendingGen = gen;
+    nwpPendingToken = step.token;
+    const from = nwpSlot;
+    const to = from ^ 1;
+    const added = addNwpRaster(to, modelId, manifest, step);
+    await waitNwpSource(added.sid, gen);
+    if (gen !== nwpSeekGen) {
+      abortOwnedSlot(gen, to);
+      return null;
+    }
+    return { gen, from, to, lid: added.lid, modelId, manifest, step };
+  }
+
+  function revealNwp(prepared) {
+    if (!prepared || !map) return false;
+    const { gen, from, to, lid, modelId, manifest, step } = prepared;
+    if (gen !== nwpSeekGen) {
+      abortOwnedSlot(gen, to);
+      return false;
+    }
+    const fromLid = nwpLayerId(from);
+    snapNwpOpacity(lid, NWP_OPACITY);
+    snapNwpOpacity(fromLid, 0);
+    nwpSlot = to;
+    nwpPendingGen = 0;
+    nwpPendingToken = null;
+    if (!nwpAttribControl) {
+      nwpAttribControl = new maplibregl.AttributionControl({ compact: true });
+      map.addControl(nwpAttribControl, 'bottom-right');
+    }
+    commitNwpStep(modelId, manifest, step);
+    requestAnimationFrame(() => {
+      if (gen !== nwpSeekGen) return;
+      dropNwpSlot(from);
+    });
+    return true;
+  }
+
+  async function showNwpStep(modelId, manifest, step) {
+    const prepared = await prepareNwpStep(modelId, manifest, step);
+    if (!prepared) return;
+    revealNwp(prepared);
+  }
+
+  function seekNwpStep(step) {
+    if (!step || !activeModel || !nwpManifest) return;
+    nwpStepToken = step.token;
+    nwpWantValid = step.t ?? Date.parse(step.validTime);
+    showNwpStep(activeModel, nwpManifest, step).catch((err) => console.warn('NWP seek', err));
+  }
+
+  function stepBy(delta) {
+    if (!nwpSteps.length) return;
+    const i = Math.max(0, nwpSteps.findIndex((s) => s.token === nwpStepToken));
+    let next = nwpSteps[i + delta];
+    if (!next && nwpLoop) {
+      next = delta > 0 ? nwpSteps[0] : nwpSteps[nwpSteps.length - 1];
+    }
+    if (next) seekNwpStep(next);
+    return next;
+  }
+
+  function startNwpPlay() {
+    if (!nwpSteps.length || nwpPlaying) return;
+    nwpPlaying = true;
+    const tick = async () => {
+      while (nwpPlaying) {
+        const i = Math.max(0, nwpSteps.findIndex((s) => s.token === nwpStepToken));
+        let next = nwpSteps[i + 1];
+        if (!next) {
+          if (nwpLoop) next = nwpSteps[0];
+          else {
+            stopNwpPlay();
+            return;
+          }
+        }
+        const t0 = performance.now();
+        let prepared;
+        try {
+          prepared = await prepareNwpStep(activeModel, nwpManifest, next);
+        } catch (err) {
+          console.warn('NWP play', err);
+          stopNwpPlay();
+          return;
+        }
+        if (!nwpPlaying) {
+          if (prepared) abortOwnedSlot(prepared.gen, prepared.to);
+          return;
+        }
+        await sleepPlay(Math.max(0, NWP_PLAY_MS - (performance.now() - t0)));
+        if (!nwpPlaying) {
+          if (prepared) abortOwnedSlot(prepared.gen, prepared.to);
+          return;
+        }
+        if (prepared) revealNwp(prepared);
+      }
+    };
+    tick();
   }
 
   async function applyNwp(modelId) {
@@ -599,22 +933,26 @@
     }
 
     if (activeModel !== modelId || requestSeq !== nwpRequestSeq) return;
-    const varId = nwpVar || defaultVar(modelId);
-    const rows = modelId === 'ecmwf'
-      ? (manifest.steps || []).filter((s) => s.ready && (!s.vars?.length || s.vars.includes(varId))).map((s) => ({ step: s.step, validTime: s.valid_time, token: String(s.step) }))
-      : (manifest.timesteps || []).filter((s) => !s.error && (s.valid || s.valid_time) && (!s.params?.length || s.params.includes(varId))).map((s) => ({
-          step: s.forecast_hour ?? s.step, validTime: s.valid || s.valid_time,
-          token: modelId === 'gfs' ? String(s.valid).replace(/[-:TZ]/g, '').slice(0, 10) : s.step_str || String(s.step).padStart(3, '0'),
-        }));
+    const readyVars = availableVars(modelId, manifest);
+    const fallback = defaultVar(modelId);
+    if (readyVars.length && nwpVar && !readyVars.includes(nwpVar)) {
+      nwpVar = readyVars.includes(fallback) ? fallback : readyVars[0];
+    }
+    const varId = nwpVar || fallback;
+    const steps = listNwpSteps(modelId, manifest, varId);
     const anchor = currentTimelineAnchor();
-    forecastRows = rows;
+    nwpManifest = manifest;
+    nwpSteps = steps;
+    forecastRows = steps;
     forecastRunTime = modelRunTime(modelId, manifest);
-    const preferred = pickNwpStep(modelId, manifest, varId);
-    const selection = reconcileTimeline(rows, forecastRunTime, anchor, preferred ? Number(preferred.step) : null);
+    const preferred = nwpWantValid != null
+      ? nearestStep(steps, nwpWantValid)
+      : pickNwpStep(modelId, manifest, varId);
+    const selection = reconcileTimeline(steps, forecastRunTime, anchor, preferred ? Number(preferred.step) : null);
     forecastStep = selection.step;
     timelineNotice = selection.notice;
     timelineAnchor = null;
-    const step = rows.find((s) => Number(s.step) === forecastStep);
+    const step = steps.find((s) => Number(s.step) === forecastStep);
     if (!step) {
       removeNwpLayer();
       console.warn(`${spec.title} manifest has no ready steps`);
@@ -623,78 +961,13 @@
     }
 
     const key = nwpSourceKey(modelId, manifest, varId, step);
-    if (key === nwpKey && map.getSource('nwp-source')) {
-      nwpInspect = { modelId, manifest, step };
-      if (map.getCanvas()) map.getCanvas().style.cursor = 'crosshair';
+    if (key === nwpKey && map.getLayer(nwpLayerId(nwpSlot))) {
+      commitNwpStep(modelId, manifest, step);
       startNwpPoll(modelId);
       return;
     }
 
-    const template = nwpTileUrl(modelId, manifest, varId, step);
-    const bbox = modelBbox(modelId, manifest);
-    const zoom = modelZoom(modelId, manifest);
-    const runTime = modelRunTime(modelId, manifest);
-    const attrib = `${manifest.attribution || spec.attribution} · run ${runTime} · valid ${step.validTime}`;
-
-    removeNwpLayer();
-
-    map.addSource('nwp-source', {
-      type: 'raster',
-      scheme: 'xyz',
-      tiles: [template],
-      tileSize: manifest.tile_size || 256,
-      minzoom: zoom.minzoom,
-      maxzoom: zoom.maxzoom,
-      bounds: bbox,
-      attribution: attrib,
-    });
-
-    let beforeLayer;
-    if (map.getLayer('radar-layer')) {
-      beforeLayer = 'radar-layer';
-    } else if (map.getLayer('satellite-layer')) {
-      beforeLayer = 'satellite-layer';
-    } else {
-      beforeLayer = overlayBeforeLayer();
-    }
-
-    map.addLayer(
-      {
-        id: 'nwp-layer',
-        type: 'raster',
-        source: 'nwp-source',
-        paint: {
-          'raster-opacity': 0.85,
-          'raster-fade-duration': 200,
-        },
-      },
-      beforeLayer
-    );
-
-    nwpAttribControl = new maplibregl.AttributionControl({ compact: true });
-    map.addControl(nwpAttribControl, 'bottom-right');
-    nwpKey = key;
-    nwpInspect = { modelId, manifest, step };
-    if (map.getCanvas()) map.getCanvas().style.cursor = 'crosshair';
-    nwpData = {
-      modelId,
-      title: spec.title,
-      badge: spec.badge,
-      varId,
-      runTime,
-      validTime: step.validTime,
-      runId: modelRunId(modelId, manifest),
-      step: step.step,
-    };
-    if (windOverlay) {
-      windOverlay.setContext({
-        modelId,
-        manifest,
-        step,
-        bbox,
-        zoom,
-      });
-    }
+    await showNwpStep(modelId, manifest, step);
     startNwpPoll(modelId);
   }
 
@@ -858,6 +1131,70 @@
     });
   }
 
+  // Manage SPARTAN Layer on Map (BMKG fire-weather tiles, TMS scheme)
+  function applySpartan(data) {
+    if (!map || !mapLoaded) return;
+
+    // Remove existing SPARTAN layer & source
+    if (map.getLayer('spartan-layer')) {
+      map.removeLayer('spartan-layer');
+    }
+    if (map.getSource('spartan-source')) {
+      map.removeSource('spartan-source');
+    }
+
+    if (!data) {
+      spartanData = null;
+      return;
+    }
+
+    const { product, startDate, endDate, opacity } = data;
+    const tileUrl = spartanTileTemplate({ product: product.id, start: startDate, end: endDate });
+    console.log('Applying SPARTAN tile URL template:', tileUrl);
+
+    map.addSource('spartan-source', {
+      type: 'raster',
+      scheme: 'tms',
+      tiles: [tileUrl],
+      tileSize: 256,
+      minzoom: 0,
+      maxzoom: 12,
+    });
+
+    // Place SPARTAN above satellite but below radar, coastline, boundaries & labels
+    let beforeLayer;
+    if (map.getLayer('radar-layer')) {
+      beforeLayer = 'radar-layer';
+    } else if (map.getLayer('coastline_outline')) {
+      beforeLayer = 'coastline_outline';
+    } else if (map.getLayer('boundary_county')) {
+      beforeLayer = 'boundary_county';
+    } else if (map.getLayer('boundary_state')) {
+      beforeLayer = 'boundary_state';
+    } else if (map.getLayer('boundary_country_inner')) {
+      beforeLayer = 'boundary_country_inner';
+    } else if (map.getLayer('waterway_label')) {
+      beforeLayer = 'waterway_label';
+    } else if (map.getLayer('place_hamlet')) {
+      beforeLayer = 'place_hamlet';
+    }
+
+    map.addLayer(
+      {
+        id: 'spartan-layer',
+        type: 'raster',
+        source: 'spartan-source',
+        paint: {
+          'raster-opacity': opacity ?? 0.9,
+          'raster-fade-duration': 200,
+        },
+      },
+      beforeLayer
+    );
+
+    spartanData = data;
+  }
+
   function handleSelectModel(modelId) {
     const next = activeModel === modelId ? null : modelId;
     nwpRequestSeq += 1;
@@ -871,6 +1208,7 @@
     forecastRows = [];
     forecastStep = null;
     activeModel = next;
+    stopNwpPlay();
     if (next === 'flood') {
       stopNwpPoll();
       applyFlood();
@@ -894,7 +1232,9 @@
 
     if (GLOBAL_MODELS.includes(modelId)) {
       if (next) {
+        nwpManifest = null;
         nwpVar = defaultVar(next);
+        nwpWantValid = null;
         applyNwp(next).catch((err) => console.warn('NWP toggle', err));
       } else {
         applyNwp(null);
@@ -906,6 +1246,8 @@
 
   function handleSelectNwpVar(varId) {
     if (nwpVar === varId) return;
+    const ready = availableVars(activeModel, nwpManifest);
+    if (ready.length && !ready.includes(varId)) return;
     nwpVar = varId;
     if (GLOBAL_MODELS.includes(activeModel)) {
       applyNwp(activeModel).catch((err) => console.warn('NWP var', err));
@@ -914,8 +1256,8 @@
 
   function currentWindContext() {
     if (!GLOBAL_MODELS.includes(activeModel)) return null;
-    if (!nwpInspect || nwpInspect.modelId !== activeModel) {
-      return { modelId: activeModel, bbox: MODELS[activeModel].bbox };
+    if (!nwpInspect || nwpInspect.modelId !== activeModel || !nwpInspect.manifest || !nwpInspect.step) {
+      return null;
     }
     const { modelId, manifest, step } = nwpInspect;
     return {
@@ -1063,9 +1405,59 @@
       if (!map.getSource(`user-${layer.id}`)) addUserLayerToMap(layer);
     }
   }
+
+  function syncDraw() {
+    drawCtrl?.sync();
+    drawCtrl?.applyMode();
+  }
+
+  function cancelDrawDraft() {
+    drawCtrl?.cancelDraft();
+    drawCtrl?.applyMode();
+  }
+
+  function finishDrawDraft() {
+    drawCtrl?.finishIfPossible();
+    drawCtrl?.applyMode();
+  }
+
+  function adoptDrawTool(id) {
+    drawCtrl?.adoptTool(id);
+  }
+
+  function handleToggleDrawing() {
+    if (drawing.sidebarOpen) cancelDrawDraft();
+    toggleSidebar();
+    syncDraw();
+  }
+
+  function toggleDrawGroup(id) {
+    const layer = drawing.layers.find((l) => l.id === id);
+    if (!layer) return;
+    setLayerVisible(id, !layer.visible);
+    syncDraw();
+  }
+
+  function exportDrawPng() {
+    if (!map) return;
+    try {
+      const canvas = map.getCanvas();
+      const url = canvas.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `map-drawing-${Date.now()}.png`;
+      a.click();
+    } catch (err) {
+      drawing.error = 'PNG gagal (raster silang origin). Coba GeoJSON.';
+      console.warn('PNG export', err);
+    }
+  }
 </script>
 
-<main class="relative w-screen h-screen overflow-hidden bg-slate-100">
+<main
+    class="relative w-screen h-screen overflow-hidden bg-slate-100"
+    class:nwp-timeline-on={GLOBAL_MODELS.includes(activeModel) && nwpSteps.length > 0}
+  >
   <!-- MapLibre Container -->
   <div bind:this={mapContainer} class="absolute inset-0 w-full h-full z-0"></div>
 
@@ -1091,26 +1483,50 @@
     {activeModel}
     radarActive={!!radarData}
     satelliteActive={!!satelliteData}
+    drawingActive={drawing.sidebarOpen}
+    spartanActive={!!spartanData}
     onOpenRadar={() => (showRadarModal = true)}
     onOpenSatellite={() => (showSatelliteModal = true)}
+    onOpenSpartan={() => (showSpartanModal = true)}
     onSelectModel={handleSelectModel}
+    onToggleDrawing={handleToggleDrawing}
   />
 
-  <!-- User overlays (GeoJSON / GPX) — button at top-right -->
+  <DrawingSidebar
+    onSync={syncDraw}
+    onCancelDraft={cancelDrawDraft}
+    onFinishDraft={finishDrawDraft}
+    onAdoptTool={adoptDrawTool}
+    onExportPng={exportDrawPng}
+  />
+
+  <!-- Active layers + user overlays — button at top-right -->
   <UserLayers
     layers={userLayers}
+    drawGroups={drawing.layers}
     onAdd={addUserLayer}
     onToggle={toggleUserLayer}
     onFit={fitUserLayer}
     onRemove={removeUserLayer}
     onClearAll={clearUserLayers}
     onRename={renameUserLayer}
+    onToggleDraw={toggleDrawGroup}
+    {spartanData}
+    onCloseSpartan={() => applySpartan(null)}
+    {radarData}
+    {satelliteData}
+    {nwpData}
+    onCloseRadar={() => applyRadar(null)}
+    onCloseSatellite={() => applySatellite(null)}
+    onCloseNwp={closeNwp}
+    onChangeSatelliteBaserun={changeSatelliteBaserun}
   />
 
   {#if GLOBAL_MODELS.includes(activeModel)}
     <ParamToolbar
-      params={paramsFor(activeModel)}
+      params={paramsAvailable(activeModel, nwpManifest)}
       activeVar={nwpVar}
+      readyIds={availableVars(activeModel, nwpManifest)}
       onSelectVar={handleSelectNwpVar}
       {windActive}
       {windSpeed}
@@ -1120,16 +1536,23 @@
     />
   {/if}
 
-  <!-- Active Layer Legend & Timeline Controls (Bottom Left) -->
-  <LayerControl
-    {radarData}
-    {satelliteData}
-    {nwpData}
-    onCloseRadar={() => applyRadar(null)}
-    onCloseSatellite={() => applySatellite(null)}
-    onCloseNwp={closeNwp}
-    onChangeSatelliteBaserun={changeSatelliteBaserun}
-  />
+  {#if GLOBAL_MODELS.includes(activeModel)}
+    <ForecastTimeline
+      steps={nwpSteps}
+      selectedToken={nwpStepToken}
+      playing={nwpPlaying}
+      loop={nwpLoop}
+      disabled={!nwpSteps.length}
+      modelTitle={nwpData?.title || MODELS[activeModel]?.title || ''}
+      runTime={nwpData?.runTime || (nwpManifest ? modelRunTime(activeModel, nwpManifest) : null)}
+      onSeek={seekNwpStep}
+      onPlay={startNwpPlay}
+      onPause={stopNwpPlay}
+      onPrev={() => stepBy(-1)}
+      onNext={() => stepBy(1)}
+      onLoop={(on) => (nwpLoop = on)}
+    />
+  {/if}
 
   <!-- Radar Modal -->
   {#if showRadarModal}
@@ -1180,13 +1603,25 @@
       onClose={() => handleSelectModel('flood')}/>
   {/if}
 
-  {#if (GLOBAL_MODELS.includes(activeModel) || activeModel === 'landslide' || activeModel === 'flood') && forecastRows.length > 0}
+  {#if (activeModel === 'landslide' || activeModel === 'flood') && forecastRows.length > 0}
     <ForecastControl
       rows={forecastRows}
       selected={forecastStep}
       runTime={forecastRunTime}
       notice={timelineNotice}
       onchange={changeForecastStep}
+    />
+  {/if}
+
+  <!-- SPARTAN Modal -->
+  {#if showSpartanModal}
+    <SpartanModal
+      currentProduct={spartanData?.product}
+      currentStart={spartanData?.startDate}
+      currentRangeDays={spartanData?.rangeDays}
+      currentOpacity={spartanData?.opacity ?? 0.9}
+      onSelect={applySpartan}
+      onClose={() => (showSpartanModal = false)}
     />
   {/if}
 </main>

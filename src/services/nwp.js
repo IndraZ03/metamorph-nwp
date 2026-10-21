@@ -16,7 +16,7 @@ export { ECMWF_POLL_MS };
 export const GLOBAL_MODELS = ['ecmwf', 'gfs', 'icon'];
 
 export const GFS_PARAMS = [
-  { id: 'temperature', label: 'Temperature', short: 'T', units: '°C' },
+  { id: 'temperature', label: 'Temperature', short: 'Temp', units: '°C' },
   { id: 'wind', label: 'Wind Speed', short: 'Wind', units: 'm/s' },
   { id: 'rh', label: 'Relative Humidity', short: 'RH', units: '%' },
   { id: 'rain', label: 'Rain accumulation', short: 'Rain', units: 'mm' },
@@ -27,7 +27,7 @@ export const GFS_PARAMS = [
 ];
 
 export const ICON_PARAMS = [
-  { id: 't_2m', label: 'Temperature', short: 'T', units: '°C' },
+  { id: 't_2m', label: 'Temperature', short: 'Temp', units: '°C' },
   { id: 'wind_10m', label: 'Wind Speed', short: 'Wind', units: 'm/s' },
   { id: 'relhum_2m', label: 'Relative Humidity', short: 'RH', units: '%' },
   { id: 'tot_prec', label: 'Rain accumulation', short: 'Rain', units: 'mm' },
@@ -362,12 +362,12 @@ export async function fetchLatest(modelId) {
   throw new Error(`unknown model ${modelId}`);
 }
 
-function nearestByValid(rows, now = Date.now()) {
-  if (!rows.length) return null;
+export function nearestStep(rows, now = Date.now()) {
+  if (!rows?.length) return null;
   let best = rows[0];
   let bestAbs = Infinity;
   for (const row of rows) {
-    const t = Date.parse(row.validTime);
+    const t = row.t ?? Date.parse(row.validTime);
     if (Number.isNaN(t)) continue;
     const abs = Math.abs(t - now);
     if (abs < bestAbs) {
@@ -378,43 +378,55 @@ function nearestByValid(rows, now = Date.now()) {
   return best;
 }
 
-export function pickStep(modelId, manifest, varId, now = Date.now()) {
+function withTime(row) {
+  const t = Date.parse(row.validTime);
+  return Number.isNaN(t) ? null : { ...row, t };
+}
+
+export function listSteps(modelId, manifest, varId) {
+  let rows = [];
   if (modelId === 'ecmwf') {
-    const step = pickEcmwfStep(manifest, now);
-    if (!step) return null;
-    return {
-      step: step.step,
-      validTime: step.valid_time,
-      token: String(step.step),
-    };
-  }
-  if (modelId === 'gfs') {
-    const rows = (manifest?.timesteps || [])
-      .filter((s) => !s.error && s.valid)
-      .map((s) => ({
-        step: s.forecast_hour,
-        validTime: s.valid,
-        token: isoToDir(s.valid),
-      }));
-    return nearestByValid(rows, now);
-  }
-  if (modelId === 'icon') {
-    const rows = (manifest?.timesteps || [])
+    rows = (manifest?.steps || [])
+      .filter((s) => s.ready && s.valid_time && (!varId || !s.vars?.length || s.vars.includes(varId)))
+      .map((s) =>
+        withTime({
+          step: s.step,
+          validTime: s.valid_time,
+          token: String(s.step),
+        })
+      );
+  } else if (modelId === 'gfs') {
+    rows = (manifest?.timesteps || [])
+      .filter((s) => !s.error && s.valid && (!varId || !s.params?.length || s.params.includes(varId)))
+      .map((s) =>
+        withTime({
+          step: s.forecast_hour,
+          validTime: s.valid,
+          token: isoToDir(s.valid),
+        })
+      );
+  } else if (modelId === 'icon') {
+    rows = (manifest?.timesteps || [])
       .filter((s) => {
-        if (!s.valid_time) return false;
+        if (s.error || !s.valid_time) return false;
         if (varId && Array.isArray(s.params) && s.params.length) {
           return s.params.includes(varId);
         }
         return true;
       })
-      .map((s) => ({
-        step: s.step,
-        validTime: s.valid_time,
-        token: s.step_str || String(s.step).padStart(3, '0'),
-      }));
-    return nearestByValid(rows, now);
+      .map((s) =>
+        withTime({
+          step: s.step,
+          validTime: s.valid_time,
+          token: s.step_str || String(s.step).padStart(3, '0'),
+        })
+      );
   }
-  return null;
+  return rows.filter(Boolean).sort((a, b) => a.t - b.t);
+}
+
+export function pickStep(modelId, manifest, varId, now = Date.now()) {
+  return nearestStep(listSteps(modelId, manifest, varId), now);
 }
 
 export function tileUrl(modelId, manifest, varId, step) {
@@ -509,8 +521,69 @@ export function legendCss(modelId, varId) {
   return `linear-gradient(to right, ${spec.stops.map(([t, c]) => `${c} ${t * 100}%`).join(', ')})`;
 }
 
+export const WIND_PARAM = {
+  ecmwf: 'wind10m',
+  gfs: 'wind',
+  icon: 'wind_10m',
+};
+
+export const WIND_UV = {
+  ecmwf: ['u10', 'v10'],
+  gfs: ['u10', 'v10'],
+  icon: ['u_10m', 'v_10m'],
+};
+
 export function paramsFor(modelId) {
   return MODELS[modelId]?.params || ECMWF_PARAMS;
+}
+
+export function windParamId(modelId) {
+  return WIND_PARAM[modelId] || null;
+}
+
+function asList(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+export function availableVars(modelId, manifest) {
+  const ids = new Set();
+  if (!manifest) return [];
+  if (modelId === 'ecmwf') {
+    // Catalog (`variables`) is the full param list, not baked tiles.
+    for (const s of asList(manifest.steps)) {
+      for (const v of asList(s.vars)) ids.add(v);
+    }
+  } else if (modelId === 'gfs') {
+    for (const s of asList(manifest.timesteps)) {
+      for (const k of Object.keys(s.tiles || {})) ids.add(k);
+    }
+  } else if (modelId === 'icon') {
+    for (const s of asList(manifest.timesteps)) {
+      for (const p of asList(s.params)) ids.add(p);
+    }
+  }
+  const uv = WIND_UV[modelId];
+  const windId = windParamId(modelId);
+  if (windId && uv && uv.every((id) => ids.has(id))) ids.add(windId);
+  return [...ids];
+}
+
+export function paramsAvailable(modelId, manifest) {
+  const all = paramsFor(modelId);
+  const ids = availableVars(modelId, manifest);
+  const windId = windParamId(modelId);
+  const uv = WIND_UV[modelId];
+  const windReady =
+    (windId && ids.includes(windId)) || (uv && uv.every((id) => ids.includes(id)));
+  if (!ids.length) {
+    return all.filter((p) => p.id === defaultVar(modelId));
+  }
+  const ready = all.filter((p) => ids.includes(p.id));
+  if (windReady && windId && !ready.some((p) => p.id === windId)) {
+    const wind = all.find((p) => p.id === windId);
+    if (wind) ready.push(wind);
+  }
+  return ready.length ? ready : all.filter((p) => p.id === defaultVar(modelId));
 }
 
 export function defaultVar(modelId) {

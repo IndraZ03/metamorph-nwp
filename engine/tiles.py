@@ -141,9 +141,17 @@ def write_var_tiles(run_dir: Path, var_id: str, step: int, field: dict) -> int:
     return count
 
 
-def write_step_tiles(run_dir: Path, step: int, fields: dict[str, dict]) -> list[str]:
+def write_step_tiles(
+    run_dir: Path,
+    step: int,
+    fields: dict[str, dict],
+    keys: list[str] | None = None,
+) -> list[str]:
     ready = []
+    want = set(keys) if keys else None
     for var_id, field in fields.items():
+        if want is not None and var_id not in want:
+            continue
         n = write_var_tiles(run_dir, var_id, step, field)
         log.info("tiles %s step=%s count=%s", var_id, step, n)
         ready.append(var_id)

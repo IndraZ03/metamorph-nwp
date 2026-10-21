@@ -24,14 +24,25 @@ const BULAN = [
   'Desember',
 ];
 
+const BULAN_SHORT = [
+  '',
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'Mei',
+  'Jun',
+  'Jul',
+  'Agu',
+  'Sep',
+  'Okt',
+  'Nov',
+  'Des',
+];
+
 const _geoCache = new Map();
 const _bmpCache = new Map();
 const BMP_CACHE_MAX = 64;
-const _scratch = typeof document !== 'undefined' ? document.createElement('canvas') : null;
-if (_scratch) {
-  _scratch.width = 1;
-  _scratch.height = 1;
-}
 
 function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
@@ -148,20 +159,28 @@ async function pixelAt(url, px, py) {
     }
     _bmpCache.set(url, bmp);
   }
-  const canvas = _scratch || document.createElement('canvas');
-  if (!_scratch) {
-    canvas.width = 1;
-    canvas.height = 1;
-  }
+  const canvas = document.createElement('canvas');
+  canvas.width = 1;
+  canvas.height = 1;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  ctx.clearRect(0, 0, 1, 1);
   ctx.drawImage(bmp, px, py, 1, 1, 0, 0, 1, 1);
   const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
   return decodeRgb(r, g, b, a);
 }
 
+function parseTime(isoOrT) {
+  if (isoOrT == null || isoOrT === '') return NaN;
+  if (typeof isoOrT === 'number') return isoOrT;
+  const s = String(isoOrT);
+  const n = Date.parse(s);
+  if (!Number.isNaN(n)) return n;
+  const m = s.match(/^(\d{4})(\d{2})(\d{2})(\d{2})$/);
+  if (m) return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4]);
+  return NaN;
+}
+
 export function formatWib(iso) {
-  const t = Date.parse(iso);
+  const t = parseTime(iso);
   if (Number.isNaN(t)) return '–';
   const wib = new Date(t + 7 * 3600 * 1000);
   const d = wib.getUTCDate();
@@ -170,6 +189,17 @@ export function formatWib(iso) {
   const hh = String(wib.getUTCHours()).padStart(2, '0');
   const mm = String(wib.getUTCMinutes()).padStart(2, '0');
   return `${d} ${m} ${y}, ${hh}:${mm} WIB`;
+}
+
+export function formatWibShort(iso) {
+  const t = parseTime(iso);
+  if (Number.isNaN(t)) return '–';
+  const wib = new Date(t + 7 * 3600 * 1000);
+  const d = wib.getUTCDate();
+  const m = BULAN_SHORT[wib.getUTCMonth() + 1];
+  const hh = String(wib.getUTCHours()).padStart(2, '0');
+  const mm = String(wib.getUTCMinutes()).padStart(2, '0');
+  return `${d} ${m} ${hh}:${mm}`;
 }
 
 export function formatValue(varId, value, units) {
@@ -242,10 +272,22 @@ export async function inspectValues({
   const maxZ = manifest.maxzoom ?? manifest.zoom_max ?? manifest.domain?.zoom_max ?? 6;
   const z = pickInspectZoom(minZ, maxZ, zoom);
   const tile = lonLatToTile(lon, lat, z);
+  const list = params || [];
   const nilai = {};
+  for (const p of list) {
+    nilai[p.id] = {
+      id: p.id,
+      name: p.label,
+      short: p.short || p.label,
+      value: null,
+      unit: p.units || '',
+      display: '–',
+    };
+  }
   const tanggal = formatWib(step.validTime);
+  onPartial?.({ lat, lon, z: tile.z, nilai: { ...nilai }, tanggal });
   await Promise.all(
-    (params || []).map(async (p) => {
+    list.map(async (p) => {
       const url = numericTileUrl(modelId, manifest, p.id, step, tile.z, tile.x, tile.y);
       let value = null;
       try {
@@ -254,10 +296,8 @@ export async function inspectValues({
         value = null;
       }
       nilai[p.id] = {
-        id: p.id,
-        name: p.label,
+        ...nilai[p.id],
         value,
-        unit: p.units || '',
         display: formatValue(p.id, value, p.units),
       };
       onPartial?.({

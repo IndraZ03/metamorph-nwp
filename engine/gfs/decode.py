@@ -87,13 +87,14 @@ def _grid_axes(msg: dict) -> tuple[np.ndarray, np.ndarray]:
     return lat[order_lat], lon[order_lon], order_lat, order_lon
 
 
-def decode_timestep(path: str) -> dict[str, np.ndarray]:
+def decode_timestep(path: str, keys: list[str] | None = None) -> dict[str, np.ndarray]:
     msgs = _read_messages(path)
     dom = config.DOMAIN
     result: dict[str, np.ndarray] = {}
     ref_axes: tuple | None = None
+    wanted = WANTED if keys is None else {k: WANTED[k] for k in keys if k in WANTED}
 
-    for key, (param_id, step_type) in WANTED.items():
+    for key, (param_id, step_type) in wanted.items():
         cands = [m for m in msgs if m["paramId"] == param_id]
         if step_type is not None:
             pref = [m for m in cands if m["stepType"] == step_type]
@@ -123,9 +124,9 @@ def decode_timestep(path: str) -> dict[str, np.ndarray]:
     out: dict[str, np.ndarray] = {}
     for key, grid in result.items():
         out[key] = grid[np.ix_(lat_idx, lon_idx)]
-    if "rain" not in out:
+    if (keys is None or "rain" in keys) and "rain" not in out:
         out["rain"] = np.zeros((len(lat_idx), len(lon_idx)), dtype=np.float64)
-    if "u10" in out and "v10" in out:
+    if "u10" in out and "v10" in out and (keys is None or "wind" in keys):
         out["wind"] = np.sqrt(out["u10"] ** 2 + out["v10"] ** 2)
     out["_lat"] = lat[lat_idx]
     out["_lon"] = lon[lon_idx]

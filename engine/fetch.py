@@ -75,7 +75,12 @@ def discover_latest_run(lookback_hours: int = 48) -> datetime | None:
     return None
 
 
-def retrieve_step(run_time: datetime, step: int, target: Path) -> Path:
+def retrieve_step(
+    run_time: datetime,
+    step: int,
+    target: Path,
+    params: list[str] | None = None,
+) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists() and target.stat().st_size > 0:
         return target
@@ -83,14 +88,21 @@ def retrieve_step(run_time: datetime, step: int, target: Path) -> Path:
     tmp = target.with_suffix(".part")
     if tmp.exists():
         tmp.unlink()
-    log.info("retrieve run=%s step=%s -> %s", run_time.isoformat(), step, target.name)
+    want = list(params or config.FETCH_PARAMS)
+    log.info(
+        "retrieve run=%s step=%s params=%s -> %s",
+        run_time.isoformat(),
+        step,
+        ",".join(want),
+        target.name,
+    )
     client.retrieve(
         date=run_time.strftime("%Y-%m-%d"),
         time=int(run_time.strftime("%H")),
         stream=config.STREAM,
         type="fc",
         step=step,
-        param=list(config.FETCH_PARAMS),
+        param=want,
         target=str(tmp),
     )
     tmp.replace(target)

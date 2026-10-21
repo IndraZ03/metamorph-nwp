@@ -105,9 +105,36 @@ def read_latest() -> dict | None:
         return None
 
 
+def sync_catalog(manifest: dict) -> None:
+    """Keep a live run's catalog in sync with config (new vars, numeric tiles)."""
+    manifest["variables"] = [
+        {
+            "id": v["id"],
+            "param": v["param"],
+            "units": v["units"],
+            "label": v["label"],
+        }
+        for v in config.VARIABLES
+    ]
+    manifest["tiles"] = config.TILE_URL_TEMPLATE
+    manifest["numeric_tiles"] = config.NUMERIC_TILE_URL_TEMPLATE
+    manifest.setdefault(
+        "numeric_encoding",
+        {
+            "type": "rgb_int24",
+            "offset": 1000.0,
+            "scale": 10.0,
+            "precision": 0.1,
+            "decode_formula": "((R * 65536 + G * 256 + B) / 10.0) - 1000.0",
+            "nodata_alpha": 0,
+        },
+    )
+
+
 def mark_step_ready(manifest: dict, step: int, vars_ready: list[str]) -> None:
     for row in manifest["steps"]:
         if row["step"] == step:
             row["ready"] = True
-            row["vars"] = list(vars_ready)
+            prev = row.get("vars") or []
+            row["vars"] = list(dict.fromkeys([*prev, *vars_ready]))
             return
