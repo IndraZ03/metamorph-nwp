@@ -5,7 +5,7 @@
   import WindBarbStrip from './meteogram/WindBarbStrip.svelte';
   import WeatherConditionOverlay from './meteogram/WeatherConditionOverlay.svelte';
 
-  let { series = null, activeTab = 'overview', activeTime = null, onSelectTime } = $props();
+  let { series = null, activeTime = null, onSelectTime } = $props();
   let host;
   let chart;
   let ready = $state(false);
@@ -13,23 +13,32 @@
   let hovered = $state(null);
   let cursorX = $state(null);
   let samples = $state([]);
+  let icons = $state([]);
   let width = $state(600);
   let frame = 0;
   const points = $derived(series?.points || []);
-  const plotHeight = $derived(activeTab === 'atmosphere' ? Math.max(260,
-    ['relativeHumidityPct', 'totalCloudCoverPct', 'pressureHpa', 'capeJkg']
-      .filter(key => points.some(p => Number.isFinite(p[key]))).length * 140 + 40) : 260);
 
   function align() {
     if (!chart || !points.length) return;
     width = chart.getWidth();
-    let previous = -Infinity;
-    samples = points.flatMap(point => {
+    let previousSample = -Infinity;
+    let previousIcon = -Infinity;
+    const nextSamples = [];
+    const nextIcons = [];
+    for (const point of points) {
       const x = chart.convertToPixel({ xAxisIndex: 0 }, point.t);
-      if (!Number.isFinite(x) || x - previous < 44) return [];
-      previous = x;
-      return [{ x, point }];
-    });
+      if (!Number.isFinite(x)) continue;
+      if (x - previousSample >= 44) { previousSample = x; nextSamples.push({ x, point }); }
+      // Icons sit above the temperature curve; no temperature means no icon.
+      if (!point.weatherCondition || !Number.isFinite(point.temperatureC)) continue;
+      if (x - previousIcon < 36) continue;
+      const y = chart.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [point.t, point.temperatureC]);
+      if (!Array.isArray(y) || !Number.isFinite(y[1])) continue;
+      previousIcon = x;
+      nextIcons.push({ x, y: y[1] - 14, id: point.weatherCondition.id, label: point.weatherCondition.label });
+    }
+    samples = nextSamples;
+    icons = nextIcons;
     const selected = untrack(() => hovered) || nearestPoint(points, activeTime);
     cursorX = selected ? chart.convertToPixel({ xAxisIndex: 0 }, selected.t) : null;
   }
@@ -57,9 +66,9 @@
     }
   }
   $effect(() => {
-    const data = points, tab = activeTab, available = ready;
+    const data = points, available = ready;
     if (available) untrack(() => {
-      chart.setOption(buildMeteogramOptions(data, tab), { notMerge: true });
+      chart.setOption(buildMeteogramOptions(data), { notMerge: true });
       chart.resize(); align();
     });
   });
@@ -108,18 +117,20 @@
 <div class="chart" tabindex="0" role="slider" aria-label="Grafik meteogram. Panah kiri/kanan jelajahi waktu; Enter pilih waktu peta."
   aria-valuemin={0} aria-valuemax={Math.max(0, points.length - 1)}
   aria-valuenow={Math.max(0, points.indexOf(hovered))} aria-valuetext={hovered?.validTime || 'Tidak tersedia'} onkeydown={keyboard}>
-  {#if chartError}<p role="alert">{chartError}. Nilai tetap tersedia pada tab Tabel.</p>{/if}
-  <div class="plot" style:height={`${plotHeight}px`}>
+  {#if chartError}<p role="alert">{chartError}. Nilai numerik tetap ada pada tooltip.</p>{/if}
+  <div class="plot">
     <div bind:this={host} class="canvas"></div>
+    <WeatherConditionOverlay {icons}/>
     {#if Number.isFinite(cursorX)}<div class="crosshair" style:left={`${cursorX}px`}></div>{/if}
+    {#if hovered}<MeteogramTooltip point={hovered} modelTitle={series?.modelTitle} x={cursorX}/>{/if}
   </div>
-  {#if activeTab === 'overview' || activeTab === 'wind'}<WindBarbStrip {samples} {width}/>{/if}
-  <WeatherConditionOverlay/>
-  {#if hovered}<MeteogramTooltip point={hovered} modelTitle={series?.modelTitle}/>{/if}
+  <WindBarbStrip {samples} {width}/>
 </div>
 <style>
-  .chart { width:100%; min-width:0; } .chart:focus-visible { outline:2px solid var(--mg-text); outline-offset:-2px; }
-  .plot { position:relative; width:100%; } .canvas { position:absolute; inset:0; }
-  .crosshair { position:absolute; top:38px; bottom:45px; border-left:1px dashed var(--mg-muted); pointer-events:none; }
-  p { padding:0 16px; }
+  .chart { display: flex; flex-direction: column; width: 100%; height: 100%; min-width: 0; min-height: 0; }
+  .chart:focus-visible { outline: 2px solid var(--mg-text); outline-offset: -2px; }
+  .plot { position: relative; flex: 1; min-height: 0; width: 100%; }
+  .canvas { position: absolute; inset: 0; }
+  .crosshair { position: absolute; top: 52px; bottom: 44px; border-left: 1px dashed var(--mg-muted); pointer-events: none; }
+  p { padding: 0 16px; }
 </style>

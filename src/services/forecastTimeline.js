@@ -11,8 +11,11 @@ export function reconcileTimeline(rows, runTime, anchor, preferredStep = null) {
   const target = Date.parse(anchor?.validTime);
   const match = Number.isFinite(target)
     ? rows.find((row) => Date.parse(timelineTime(row, runTime)) === target) : null;
-  const chosen = match || rows.find((row) => Number(row.step) === preferredStep)
-    || rows.find((row) => row.ready !== false) || rows[0];
+  // Jangan pernah memilih step yang belum ready: layer tidak akan tergambar.
+  const ready = (row) => row && row.ready !== false;
+  const chosen = (ready(match) ? match : null)
+    || rows.find((row) => Number(row.step) === preferredStep && ready(row))
+    || rows.find(ready) || rows[0];
   const messages = [];
   if (anchor?.runTime && Date.parse(anchor.runTime) !== Date.parse(runTime)) {
     messages.push('Run produk berbeda; waktu berlaku diselaraskan bila tersedia.');

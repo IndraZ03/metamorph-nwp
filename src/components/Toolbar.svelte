@@ -13,6 +13,8 @@
     onOpenSpartan,
     onSelectModel,
     onToggleDrawing,
+    landslideActive = false,
+    floodActive = false,
   } = $props();
 
   let spartanMenuOpen = $state(false);
@@ -24,8 +26,8 @@
     { id: 'ecmwf', label: 'ECMWF', icon: 'ecmwf', active: () => activeModel === 'ecmwf', enabled: true },
     { id: 'gfs', label: 'GFS', icon: 'gfs', active: () => activeModel === 'gfs', enabled: true },
     { id: 'icon', label: 'ICON', icon: 'icon', active: () => activeModel === 'icon', enabled: true },
-    { id: 'landslide', label: 'Potensi Tanah Longsor', icon: 'landslide', active: () => activeModel === 'landslide', enabled: true },
-    { id: 'flood', label: 'Indonesia Flood Potential', icon: 'flood', active: () => activeModel === 'flood', enabled: true },
+    { id: 'landslide', label: 'Potensi Tanah Longsor', icon: 'landslide', active: () => landslideActive, enabled: true },
+    { id: 'flood', label: 'Indonesia Flood Potential', icon: 'flood', active: () => floodActive, enabled: true },
     { id: 'cawo', label: 'CAWO', icon: 'cawo', active: () => activeModel === 'cawo', enabled: false },
     { id: 'wrf', label: 'WRF', icon: 'wrf', active: () => activeModel === 'wrf', enabled: false },
     { id: 'wrf-chem', label: 'WRF-Chem', icon: 'chem', active: () => activeModel === 'wrf-chem', enabled: false },

@@ -409,7 +409,7 @@
     left: 16px;
     right: 16px;
     bottom: calc(var(--meteogram-visible-height, 0px) + 16px);
-    z-index: 35;
+    z-index: 47;
     display: flex;
     align-items: center;
     gap: 10px;

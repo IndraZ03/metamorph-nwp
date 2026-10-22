@@ -5,7 +5,7 @@ import {
   parseGfsRainWindow,
   normalizePrecipitationSeries,
 } from './meteogram/normalize.js';
-import { classifyWeatherCondition } from './meteogram/conditions.js';
+import { classifyWeatherCondition, solarElevationDeg } from './meteogram/conditions.js';
 import {
   fetchMeteogram,
   meteogramKey,
@@ -79,10 +79,34 @@ test('normalizePrecipitationSeries handles cumulative ECMWF differencing and res
   assert.equal(resetRes[1].precipitationMm, null);
 });
 
-test('classifyWeatherCondition returns unknown status when no operational rules approved', () => {
-  const cond = classifyWeatherCondition();
-  assert.equal(cond.id, 'unknown');
-  assert.equal(cond.label, 'Kondisi tidak tersedia');
+test('solarElevationDeg separates day and night at the point itself', () => {
+  // Jakarta, 22 Oct 2026: sun near zenith at local noon, well below horizon at midnight.
+  assert.ok(solarElevationDeg(-6.2, 106.85, Date.parse('2026-10-22T05:00:00Z')) > 70);
+  assert.ok(solarElevationDeg(-6.2, 106.85, Date.parse('2026-10-22T17:00:00Z')) < -50);
+  assert.equal(solarElevationDeg(null, 106.85, Date.now()), null);
+});
+
+test('classifyWeatherCondition derives a category only from available evidence', () => {
+  const jakarta = [-6.2, 106.85];
+  const noon = Date.parse('2026-10-22T05:00:00Z');
+  const midnight = Date.parse('2026-10-22T17:00:00Z');
+  const base = { precipitationMm: 0, precipitationIntervalHours: 3, totalCloudCoverPct: 10, t: noon };
+
+  assert.equal(classifyWeatherCondition(null, ...jakarta), null);
+  // Rain without a known accumulation window is not enough to claim rain.
+  assert.equal(classifyWeatherCondition(
+    { precipitationMm: 5, precipitationIntervalHours: null, totalCloudCoverPct: null, t: noon }, ...jakarta), null);
+  assert.equal(classifyWeatherCondition(
+    { ...base, precipitationMm: 1.2 }, ...jakarta).id, 'rain');
+  assert.equal(classifyWeatherCondition(
+    { ...base, precipitationMm: 13 }, ...jakarta).id, 'heavy_rain');
+  // CAPE never produces a thunderstorm claim, however large.
+  assert.equal(classifyWeatherCondition({ ...base, capeJkg: 4000 }, ...jakarta).id, 'clear_day');
+  assert.equal(classifyWeatherCondition({ ...base, totalCloudCoverPct: 90 }, ...jakarta).id, 'cloudy');
+  assert.equal(classifyWeatherCondition({ ...base, totalCloudCoverPct: 50 }, ...jakarta).id, 'partly_cloudy_day');
+  assert.equal(classifyWeatherCondition(
+    { ...base, totalCloudCoverPct: 50, t: midnight }, ...jakarta).id, 'partly_cloudy_night');
+  assert.equal(classifyWeatherCondition({ ...base, t: midnight }, ...jakarta).id, 'clear_night');
 });
 
 test('meteogramKey generates consistent cache keys', () => {

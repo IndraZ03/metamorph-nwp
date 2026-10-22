@@ -69,5 +69,5 @@ Meteogram titik meteorologi diimplementasikan sebagai panel **Bottom Sheet non-m
 ---
 
 ## 6. Batasan Operasional & Data Saat Ini
-1. **Klasifikasi Kondisi Cuaca:** Belum ada aturan kode cuaca atau ambang operasional yang disetujui secara resmi. Meteogram dengan jujur menampilkan status *"Kondisi tidak tersedia"* dan tidak mengarang ikon/kondisi cuaca.
+1. **Klasifikasi Kondisi Cuaca:** Sumber tile tidak punya kode cuaca model, jadi ikon diturunkan dari parameter yang ada, bukan dari kode resmi. Aturan produk (bukan ambang terdokumentasi model): hujan bila laju interval ≥ 0.1 mm/jam, hujan lebat bila ≥ 4 mm/jam; selain itu tutupan awan ≥ 80% = berawan, ≥ 30% = berawan sebagian, di bawahnya = cerah. Siang/malam dari elevasi matahari di koordinat titik dan valid time. CAPE tidak pernah dipakai — tidak ada kategori petir. Bila bukti kurang (hujan tanpa interval, atau awan tidak tersedia), ikon tidak digambar dan label jadi "Kondisi tidak tersedia".
 2. **Ketersediaan Timestep Lokal:** Manifest lokal ICON saat ini hanya menyediakan step `000` tanpa komponen angin vektor U/V. Grafik menampilkan data titik tunggal (*single point*) secara akurat tanpa mengekstrapolasi kurva palsu.

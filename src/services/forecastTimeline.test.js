@@ -18,6 +18,17 @@ test('reconcileTimeline preserves valid time across different runs and sets noti
   assert.match(res.notice, /Run produk berbeda/);
 });
 
+test('reconcileTimeline skips unready matching and preferred steps', () => {
+  const rows = [
+    { step: 12, ready: false },
+    { step: 18, ready: false },
+    { step: 24, ready: true },
+  ];
+  const anchor = { validTime: '2026-10-18T12:00:00Z' };
+  const res = reconcileTimeline(rows, '2026-10-18T00:00:00Z', anchor, 18);
+  assert.equal(res.step, 24);
+});
+
 test('reconcileTimeline falls back to available step when target missing and reports notice', () => {
   const rows = [
     { step: 24, valid_time: '2026-10-19T00:00:00Z', ready: true },

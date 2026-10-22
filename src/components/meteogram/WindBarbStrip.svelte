@@ -11,11 +11,11 @@
 </script>
 {#if samples.some(s => Number.isFinite(s.point.windDirectionDeg))}
   <div class="strip"><span>Angin FROM · ½ garis 5 kt · garis 10 kt · bendera 50 kt</span>
-    <svg viewBox={`0 0 ${width} 42`} width="100%" height="42" role="img" aria-label="Wind barbs sejajar waktu grafik; angka lengkap pada tabel">
+    <svg viewBox={`0 0 ${width} 56`} width="100%" height="56" role="img" aria-label="Wind barbs sejajar waktu grafik; angka lengkap pada tabel">
       {#each samples as s}{#if Number.isFinite(s.point.windSpeedMs) && Number.isFinite(s.point.windDirectionDeg)}
         {@const b = barb(s.point.windSpeedMs)}<g transform={`translate(${s.x},28) rotate(${s.point.windDirectionDeg})`}><path d={b.path} fill="none" stroke="currentColor" stroke-width="1.2"/>{#each b.flags as flag}<polygon points={flag} fill="currentColor"/>{/each}</g>
       {/if}{/each}
     </svg>
   </div>
 {/if}
-<style>.strip { color:var(--mg-muted); font-size:10px; border-top:1px solid var(--mg-border); } span { padding-left:16px; }</style>
+<style>.strip { flex-shrink:0; color:var(--mg-muted); font-size:10px; border-top:1px solid var(--mg-border); } span { padding-left:16px; }</style>

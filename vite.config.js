@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -33,7 +34,7 @@ function sendJson(res, obj, status = 200) {
 }
 
 function landslideProxy() {
-  const origin = process.env.NWP_API_ORIGIN || 'http://127.0.0.1:8000';
+  const origin = process.env.NWP_API_ORIGIN || 'http://127.0.0.1:8003';
   return async (req, res, next) => {
     if (!['/api/landslide/forecast/', '/api/flood/forecast/'].some((prefix) => req.url?.startsWith(prefix))) return next();
     if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -338,6 +339,231 @@ export default defineConfig({
           } catch (e) {
             res.statusCode = 502;
             res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+            res.end(String(e));
+          }
+        });
+
+        // BNPB InaRISK sebagai tile XYZ. Browser tidak boleh hit gis.bnpb.go.id
+        // langsung (CORS), jadi proxy di sini.
+        // Banjir: WMS 1.1.1 + SRS=EPSG:3857 (diverifikasi 2026-10-22, server terima
+        // Web Mercator meski tidak diumumkan di GetCapabilities).
+        // Longsor: service Float32 0-1 TANPA colormap, jadi WMS merendernya
+        // grayscale nyaris hitam. Ambil TIFF mentah via exportImage lalu warnai
+        // di sini: 0 = NoData (transparan), selainnya ramp kelas longsor app.
+        const INARISK_WMS = {
+          flood: 'inarisk/layer_kerentanan_banjir/ImageServer/WMSServer?LAYERS=layer_kerentanan_banjir',
+        };
+        const INARISK_EXPORT =
+          'https://gis.bnpb.go.id/server/rest/services/inarisk/INDEKS_KERENTANAN_TANAH_LONGSOR/ImageServer/exportImage';
+        const BNPB_HEADERS = { 'User-Agent': 'metamorph-nwp/1.0', Accept: '*/*' };
+
+        // Kelas sama dengan LANDSLIDE_LEVELS di LayerControl: Waspada / Siaga / Bahaya.
+        function landslideColor(v) {
+          if (v <= 0.333) return [0xea, 0xb3, 0x08, 200];
+          if (v <= 0.666) return [0xf9, 0x73, 0x16, 210];
+          return [0xdc, 0x26, 0x26, 220];
+        }
+
+        // PNG RGBA, filter None per baris, deflate. Cukup untuk tile ini.
+        function encodePng(rgba, width = 256, height = 256) {
+          const stride = width * 4;
+          const raw = Buffer.alloc(height * (1 + stride));
+          for (let row = 0; row < height; row++) {
+            rgba.copy(raw, row * (1 + stride) + 1, row * stride, (row + 1) * stride);
+          }
+          const ihdr = Buffer.alloc(13);
+          ihdr.writeUInt32BE(width, 0);
+          ihdr.writeUInt32BE(height, 4);
+          ihdr[8] = 8;
+          ihdr[9] = 6;
+          const chunk = (type, data) => {
+            const len = Buffer.alloc(4);
+            len.writeUInt32BE(data.length);
+            const body = Buffer.concat([Buffer.from(type), data]);
+            const crc = Buffer.alloc(4);
+            crc.writeUInt32BE(zlib.crc32(body));
+            return Buffer.concat([len, body, crc]);
+          };
+          return Buffer.concat([
+            Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+            chunk('IHDR', ihdr),
+            chunk('IDAT', zlib.deflateSync(raw)),
+            chunk('IEND', Buffer.alloc(0)),
+          ]);
+        }
+
+        // Tile yang memotong ekuator diambil sebagai dua TIFF 256x128
+        // (utara lalu selatan) lalu digabung jadi satu PNG 256x256.
+        function colorizeSplitTile(north, south) {
+          const top = colorizeLandslideTiff(north, 256, 128);
+          const bottom = colorizeLandslideTiff(south, 256, 128);
+          const rgba = Buffer.alloc(256 * 256 * 4);
+          top.copy(rgba, 0);
+          bottom.copy(rgba, 256 * 128 * 4);
+          return encodePng(rgba);
+        }
+
+        // TIFF dari exportImage: little-endian, Float32, 1 sampel, tanpa
+        // kompresi, strip 128x128. Nilai tepat 0 = NoData.
+        function colorizeLandslideTiff(buf, width = 256, height = 256) {
+          if (buf.length < 8 || buf.readUInt16LE(0) !== 0x4949) {
+            throw new Error('Bukan TIFF little-endian');
+          }
+          const ifd = buf.readUInt32LE(4);
+          const count = buf.readUInt16LE(ifd);
+          const tag = {};
+          for (let i = 0; i < count; i++) {
+            const e = ifd + 2 + 12 * i;
+            tag[buf.readUInt16LE(e)] = {
+              type: buf.readUInt16LE(e + 2),
+              cnt: buf.readUInt32LE(e + 4),
+              val: buf.readUInt32LE(e + 8),
+            };
+          }
+          const need = [256, 257, 258, 259, 277, 339];
+          if (
+            need.some((t) => !tag[t]) ||
+            tag[256].val !== width ||
+            tag[257].val !== height ||
+            tag[258].val !== 32 ||
+            tag[259].val !== 1 ||
+            tag[277].val !== 1 ||
+            tag[339].val !== 3 ||
+            !tag[324] ||
+            !tag[325]
+          ) {
+            throw new Error('Layout TIFF longsor tak terduga');
+          }
+          const readLongs = (t) => {
+            const out = [];
+            const base = t.cnt === 1 ? null : t.val;
+            for (let i = 0; i < t.cnt; i++) {
+              out.push(base === null ? t.val : buf.readUInt32LE(base + 4 * i));
+            }
+            return out;
+          };
+          const offsets = readLongs(tag[324]);
+          const lengths = readLongs(tag[325]);
+          const rgba = Buffer.alloc(width * height * 4);
+          // Tile 128x128 diisi baris-per-baris: tile 0 kiri-atas, 1 kanan-atas,
+          // 2 kiri-bawah, 3 kanan-bawah. Tile kosong (byte count 0) = semua NoData.
+          const tilesPerRow = width / 128;
+          offsets.forEach((off, i) => {
+            const len = lengths[i] || 0;
+            if (!len) return;
+            const col0 = (i % tilesPerRow) * 128;
+            const row0 = Math.floor(i / tilesPerRow) * 128;
+            for (let row = 0; row < 128; row++) {
+              for (let col = 0; col < 128; col++) {
+                const v = buf.readFloatLE(off + (row * 128 + col) * 4);
+                if (!(v > 0)) continue;
+                const [r, g, b, a] = landslideColor(v);
+                const p = ((row0 + row) * width + col0 + col) * 4;
+                rgba[p] = r;
+                rgba[p + 1] = g;
+                rgba[p + 2] = b;
+                rgba[p + 3] = a;
+              }
+            }
+          });
+          return rgba;
+        }
+        server.middlewares.use('/api/proxy-inarisk-tile', async (req, res) => {
+          try {
+            const reqUrl = new URL(req.url, 'http://localhost');
+            const m = reqUrl.pathname.match(/(\d+)\/(\d+)\/(\d+)\.png$/);
+            if (!m) {
+              res.statusCode = 400;
+              res.end('Invalid InaRISK tile request');
+              return;
+            }
+            const z = Number(m[1]);
+            const x = Number(m[2]);
+            const y = Number(m[3]);
+            if (z > 12 || x >= 2 ** z || y >= 2 ** z) {
+              res.statusCode = 400;
+              res.end('Tile coordinate out of range');
+              return;
+            }
+            const n = 2 ** z;
+            const span = (20037508.342789244 * 2) / n;
+            // ArcGIS Web Adaptor menolak BBOX dengan >1 desimal (HTTP 500),
+            // jadi bulatkan ke bilangan bulat. Geser 0.5 m tidak terlihat di tile.
+            const minx = Math.round(-20037508.342789244 + x * span);
+            const maxx = Math.round(minx + span);
+            const maxy = Math.round(20037508.342789244 - y * span);
+            const miny = Math.round(maxy - span);
+            const layerKey = reqUrl.searchParams.get('layer') === 'flood' ? 'flood' : 'landslide';
+            // Header browser (Accept: image/*, Sec-Fetch-*) bikin ArcGIS Web Adaptor
+            // balas 500; header minimal ala curl lolos. Diverifikasi 2026-10-22.
+            // Server BNPB sesekali balas 500 di bawah beban paralel lalu pulih
+            // sendiri, jadi ulang sekali sebelum menyerah.
+            const fetchBnpb = async (url, init = {}) => {
+              const opts = {
+                ...init,
+                headers: { ...BNPB_HEADERS, ...init.headers },
+                signal: AbortSignal.timeout(45000),
+              };
+              let upstream = await fetch(url, opts);
+              if (upstream.status >= 500) {
+                await new Promise((resolve) => setTimeout(resolve, 1000));
+                upstream = await fetch(url, opts);
+              }
+              return upstream;
+            };
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            if (layerKey === 'landslide') {
+              // exportImage balas 500 bila bbox melewati ekuator (diverifikasi
+              // 2026-10-22), jadi tile yang memotong y=0 dipecah dua.
+              const spans = miny < 0 && maxy > 0
+                ? [[minx, 0, maxx, maxy], [minx, miny, maxx, 0]]
+                : [[minx, miny, maxx, maxy]];
+              const parts = [];
+              for (const [bx0, by0, bx1, by1] of spans) {
+                const body = new URLSearchParams({
+                  bbox: `${bx0},${by0},${bx1},${by1}`,
+                  bboxSR: '102100',
+                  imageSR: '102100',
+                  size: spans.length === 1 ? '256,256' : '256,128',
+                  format: 'tiff',
+                  pixelType: 'F32',
+                  f: 'image',
+                });
+                const upstream = await fetchBnpb(INARISK_EXPORT, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                  body,
+                });
+                if (!upstream.ok) {
+                  res.statusCode = upstream.status;
+                  res.setHeader('Cache-Control', 'no-store');
+                  res.end(Buffer.from(await upstream.arrayBuffer()));
+                  return;
+                }
+                parts.push(Buffer.from(await upstream.arrayBuffer()));
+              }
+              const png = spans.length === 1
+                ? encodePng(colorizeLandslideTiff(parts[0]))
+                : colorizeSplitTile(parts[0], parts[1]);
+              res.statusCode = 200;
+              res.setHeader('Content-Type', 'image/png');
+              res.setHeader('Cache-Control', 'public, max-age=86400');
+              res.end(png);
+              return;
+            }
+            const targetUrl =
+              `https://gis.bnpb.go.id/server/services/${INARISK_WMS.flood}` +
+              `&SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap` +
+              `&STYLES=default&FORMAT=image/png&TRANSPARENT=TRUE&SRS=EPSG:3857` +
+              `&WIDTH=256&HEIGHT=256&BBOX=${minx},${miny},${maxx},${maxy}`;
+            const upstream = await fetchBnpb(targetUrl, {});
+            res.statusCode = upstream.status;
+            res.setHeader('Content-Type', upstream.headers.get('content-type') || 'image/png');
+            res.setHeader('Cache-Control', upstream.ok ? 'public, max-age=86400' : 'no-store');
+            res.end(Buffer.from(await upstream.arrayBuffer()));
+          } catch (e) {
+            res.statusCode = 502;
+            res.setHeader('Cache-Control', 'no-store');
             res.end(String(e));
           }
         });

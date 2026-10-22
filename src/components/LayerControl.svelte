@@ -1,5 +1,6 @@
 <script>
   import { legendCss, legendFor } from '../services/nwp.js';
+  import { satelliteLegend } from '../services/satelliteLegend.js';
   import { formatWibShort } from '../services/numericTiles.js';
   import { SPARTAN_CLASSES, spartanDateLabel } from '../services/spartan.js';
 
@@ -25,8 +26,11 @@
     onCloseSpartan,
     onCloseLandslide,
     onChangeLandslideOpacity,
+    onToggleInarisk,
     onCloseFlood,
     onChangeFloodOpacity,
+    hazardOrder = null,
+    onMoveHazard,
   } = $props();
 
   function nwpLegend() {
@@ -55,17 +59,134 @@
     { dbz: 65, color: '#ff00ff' },
     { dbz: 70, color: '#9800fe' },
   ];
+  const activeOrder = $derived((hazardOrder || ['nwp', 'spartan', 'satellite', 'radar', 'landslide', 'flood']).filter(kind => ({ radar: radarData, satellite: satelliteData, nwp: nwpData, spartan: spartanData, landslide: landslideData, flood: floodData })[kind]));
 </script>
+
+{#snippet orderButtons(kind, label)}
+  {#if activeOrder.length > 1}
+    <div class="al-order">
+      <button type="button" class="al-x" disabled={activeOrder.indexOf(kind) === activeOrder.length - 1} onclick={() => onMoveHazard?.(kind, 1)} title="Naikkan lapisan" aria-label="Naikkan lapisan {label}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 14l6-6 6 6" /></svg></button>
+      <button type="button" class="al-x" disabled={activeOrder.indexOf(kind) === 0} onclick={() => onMoveHazard?.(kind, -1)} title="Turunkan lapisan" aria-label="Turunkan lapisan {label}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 10l6 6 6-6" /></svg></button>
+    </div>
+  {/if}
+{/snippet}
+
+{#snippet landslideRow()}
+  {#if landslideData}
+    <section class="al-row">
+      <header class="al-head">
+        <div class="al-meta">
+          <span class="al-name">Prakiraan Potensi Tanah Longsor</span>
+          <span class="al-sub">
+            {#if landslideData.runTime}Run {formatWibShort(landslideData.runTime)}{/if}
+            {#if landslideData.validTime}<span class="al-dot">·</span> Valid {formatWibShort(landslideData.validTime)}{/if}
+          </span>
+        </div>
+        <button type="button" class="al-x" class:on={landslideData.inarisk} onclick={() => onToggleInarisk?.()}
+          title={landslideData.inarisk ? 'Sembunyikan daerah rentan InaRISK' : 'Tampilkan daerah rentan InaRISK'}
+          aria-label="Daerah rentan tanah longsor InaRISK" aria-pressed={landslideData.inarisk ? 'true' : 'false'}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 20h18L12 4z" /></svg>
+        </button>
+        <div class="al-op">
+          <button type="button" class="al-x" title="Opasitas" aria-label="Opasitas lapisan {Math.round((landslideData.opacity ?? 0.6) * 100)} persen">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9" /><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor" stroke="none" /></svg>
+          </button>
+          <div class="al-op-pop">
+            <div class="al-op-label"><span>Opasitas</span><span>{Math.round((landslideData.opacity ?? 0.6) * 100)}%</span></div>
+            <input type="range" min="0" max="1" step="0.05" value={landslideData.opacity ?? 0.6}
+              oninput={(e) => onChangeLandslideOpacity?.(parseFloat(e.currentTarget.value))} aria-label="Opasitas lapisan" />
+          </div>
+        </div>
+        {#if hazardOrder && hazardOrder.length > 1}
+          <div class="al-order">
+            <button type="button" class="al-x" disabled={hazardOrder.indexOf('landslide') === hazardOrder.length - 1} onclick={() => onMoveHazard?.('landslide', 1)} title="Naikkan lapisan" aria-label="Naikkan lapisan longsor">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 14l6-6 6 6" /></svg>
+            </button>
+            <button type="button" class="al-x" disabled={hazardOrder.indexOf('landslide') === 0} onclick={() => onMoveHazard?.('landslide', -1)} title="Turunkan lapisan" aria-label="Turunkan lapisan longsor">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 10l6 6 6-6" /></svg>
+            </button>
+          </div>
+        {/if}
+        <button type="button" class="al-x" onclick={onCloseLandslide} title="Tutup Prakiraan Potensi Tanah Longsor" aria-label="Tutup Prakiraan Potensi Tanah Longsor">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
+        </button>
+      </header>
+      <div class="al-bar" title="Potensi tanah longsor">{#each LANDSLIDE_LEVELS as lvl}<i style="background:{lvl.color}" title={lvl.label}></i>{/each}</div>
+      <div class="al-scale">{#each LANDSLIDE_LEVELS as lvl}<span>{lvl.label}</span>{/each}</div>
+      {#if landslideData.inarisk}
+        {@const low = landslideData.vulnerabilityLowMax ?? 0.333}
+        {@const med = landslideData.vulnerabilityMediumMax ?? 0.666}
+        <div class="al-sub-label">Kerentanan longsor</div>
+        <div class="al-bar" title="Indeks kerentanan longsor">{#each LANDSLIDE_LEVELS as lvl}<i style="background:{lvl.color}" title={lvl.label}></i>{/each}</div>
+        <div class="al-scale"><span>0</span><span>{low}</span><span>{med}</span><span>1</span></div>
+      {/if}
+    </section>
+  {/if}
+{/snippet}
+
+{#snippet floodRow()}
+  {#if floodData}
+    <section class="al-row">
+      <header class="al-head">
+        <div class="al-meta">
+          <span class="al-name">Potensi Banjir</span>
+          <span class="al-sub">
+            {#if floodData.runTime}Run {formatWibShort(floodData.runTime)}{/if}
+            {#if floodData.validTime}<span class="al-dot">·</span> Valid {formatWibShort(floodData.validTime)}{/if}
+          </span>
+        </div>
+        <button type="button" class="al-x" class:on={floodData.inarisk} onclick={() => onToggleInarisk?.()}
+          title={floodData.inarisk ? 'Sembunyikan kerentanan banjir InaRISK' : 'Tampilkan kerentanan banjir InaRISK'}
+          aria-label="Kerentanan banjir InaRISK" aria-pressed={floodData.inarisk ? 'true' : 'false'}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 20h18L12 4z" /></svg>
+        </button>
+        <div class="al-op">
+          <button type="button" class="al-x" title="Opasitas" aria-label="Opasitas lapisan {Math.round((floodData.opacity ?? 0.6) * 100)} persen">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9" /><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor" stroke="none" /></svg>
+          </button>
+          <div class="al-op-pop">
+            <div class="al-op-label"><span>Opasitas</span><span>{Math.round((floodData.opacity ?? 0.6) * 100)}%</span></div>
+            <input type="range" min="0" max="1" step="0.05" value={floodData.opacity ?? 0.6}
+              oninput={(e) => onChangeFloodOpacity?.(parseFloat(e.currentTarget.value))} aria-label="Opasitas lapisan" />
+          </div>
+        </div>
+        {#if hazardOrder && hazardOrder.length > 1}
+          <div class="al-order">
+            <button type="button" class="al-x" disabled={hazardOrder.indexOf('flood') === hazardOrder.length - 1} onclick={() => onMoveHazard?.('flood', 1)} title="Naikkan lapisan" aria-label="Naikkan lapisan banjir">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 14l6-6 6 6" /></svg>
+            </button>
+            <button type="button" class="al-x" disabled={hazardOrder.indexOf('flood') === 0} onclick={() => onMoveHazard?.('flood', -1)} title="Turunkan lapisan" aria-label="Turunkan lapisan banjir">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 10l6 6 6-6" /></svg>
+            </button>
+          </div>
+        {/if}
+        <button type="button" class="al-x" onclick={onCloseFlood} title="Tutup Potensi Banjir" aria-label="Tutup Potensi Banjir">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
+        </button>
+      </header>
+      <div class="al-bar" style="background:{FLOOD_RAMP}" title="Hujan 24 jam ke depan"></div>
+      <div class="al-scale"><span>0 mm</span><span>24 jam</span><span>≥200 mm</span></div>
+      {#if floodData.inarisk}
+        <div class="al-scale"><span>InaRISK</span><span>Kerentanan</span><span>BNPB</span></div>
+      {/if}
+    </section>
+  {/if}
+{/snippet}
 
 {#if radarData || satelliteData || nwpData || spartanData || landslideData || floodData}
   <div class="al" role="region" aria-label="Lapisan aktif">
-    {#if radarData}
+    {#each [...activeOrder].reverse() as kind (kind)}
+    {#if kind === 'landslide'}
+      {@render landslideRow()}
+    {:else if kind === 'flood'}
+      {@render floodRow()}
+    {:else if kind === 'radar' && radarData}
       <section class="al-row">
         <header class="al-head">
           <div class="al-meta">
             <span class="al-name">Radar {radarData.site.label}</span>
-            <span class="al-sub">{radarData.currentFile || radarData.manifest?.latest?.file || 'CMAX'}</span>
           </div>
+          {@render orderButtons('radar', 'radar')}
           <button type="button" class="al-x" onclick={onCloseRadar} title="Tutup radar" aria-label="Tutup radar">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
           </button>
@@ -77,30 +198,34 @@
         </div>
         <div class="al-scale"><span>5</span><span>dBZ</span><span>70</span></div>
       </section>
-    {/if}
-
-    {#if satelliteData}
+    {:else if kind === 'satellite' && satelliteData}
+      {@const satLegend = satelliteLegend(satelliteData.product)}
       <section class="al-row">
         <header class="al-head">
           <div class="al-meta">
             <span class="al-name">{satelliteData.product.label}</span>
             <span class="al-sub">{formatWibShort(satelliteData.currentBaserun)} WIB</span>
           </div>
+          {@render orderButtons('satellite', 'satelit')}
           <button type="button" class="al-x" onclick={onCloseSatellite} title="Tutup satelit" aria-label="Tutup satelit">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
           </button>
         </header>
-  
+        {#if satLegend}
+          <div class="al-bar" title={satLegend.label}>{#each satLegend.stops as stop}<i style:background={stop.color} title={String(stop.value)}></i>{/each}</div>
+          <div class="al-scale"><span>{satLegend.stops[0].value}</span><span>{satLegend.label}</span><span>{satLegend.stops.at(-1).value}</span></div>
+        {:else}
+          <div class="al-sub-label">Legenda rentang belum tersedia dari sumber BMKG.</div>
+        {/if}
       </section>
-    {/if}
-
-    {#if spartanData}
+    {:else if kind === 'spartan' && spartanData}
       <section class="al-row">
         <header class="al-head">
           <div class="al-meta">
             <span class="al-name">KARHUTLA {spartanData.product.code}</span>
             <span class="al-sub">Run {spartanDateLabel(spartanData.startDate)} · Berlaku {spartanDateLabel(spartanData.endDate)}</span>
           </div>
+          {@render orderButtons('spartan', 'KARHUTLA')}
           <button type="button" class="al-x" onclick={onCloseSpartan} title="Hapus KARHUTLA {spartanData.product.code}" aria-label="Hapus KARHUTLA {spartanData.product.code}">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
           </button>
@@ -112,107 +237,7 @@
         </div>
         <div class="al-scale">{#each SPARTAN_CLASSES as cls}<span>{cls.label}</span>{/each}</div>
       </section>
-    {/if}
-
-    {#if landslideData}
-      <section class="al-row">
-        <header class="al-head">
-          <div class="al-meta">
-            <span class="al-name">Prakiraan Potensi Tanah Longsor</span>
-            <span class="al-sub">
-              {#if landslideData.runTime}Run {formatWibShort(landslideData.runTime)}{/if}
-              {#if landslideData.validTime}<span class="al-dot">·</span> Valid {formatWibShort(landslideData.validTime)}{/if}
-            </span>
-          </div>
-          <div class="al-op">
-            <button
-              type="button"
-              class="al-x"
-              aria-label="Opasitas lapisan {Math.round((landslideData.opacity ?? 0.6) * 100)} persen"
-              title="Opasitas"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="9" />
-                <path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor" stroke="none" />
-              </svg>
-            </button>
-            <div class="al-op-pop">
-              <div class="al-op-label">
-                <span>Opasitas</span>
-                <span>{Math.round((landslideData.opacity ?? 0.6) * 100)}%</span>
-              </div>
-              <input
-                type="range"
-                min="0.1"
-                max="1"
-                step="0.05"
-                value={landslideData.opacity ?? 0.6}
-                oninput={(e) => onChangeLandslideOpacity?.(parseFloat(e.currentTarget.value))}
-                aria-label="Opasitas lapisan"
-              />
-            </div>
-          </div>
-          <button type="button" class="al-x" onclick={onCloseLandslide} title="Tutup Prakiraan Potensi Tanah Longsor" aria-label="Tutup Prakiraan Potensi Tanah Longsor">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
-          </button>
-        </header>
-        <div class="al-bar" title="Potensi tanah longsor">
-          {#each LANDSLIDE_LEVELS as lvl}
-            <i style="background:{lvl.color}" title={lvl.label}></i>
-          {/each}
-        </div>
-        <div class="al-scale">{#each LANDSLIDE_LEVELS as lvl}<span>{lvl.label}</span>{/each}</div>
-      </section>
-    {/if}
-
-    {#if floodData}
-      <section class="al-row">
-        <header class="al-head">
-          <div class="al-meta">
-            <span class="al-name">Potensi Banjir</span>
-            <span class="al-sub">
-              {#if floodData.runTime}Run {formatWibShort(floodData.runTime)}{/if}
-              {#if floodData.validTime}<span class="al-dot">·</span> Valid {formatWibShort(floodData.validTime)}{/if}
-            </span>
-          </div>
-          <div class="al-op">
-            <button
-              type="button"
-              class="al-x"
-              aria-label="Opasitas lapisan {Math.round((floodData.opacity ?? 0.6) * 100)} persen"
-              title="Opasitas"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="9" />
-                <path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor" stroke="none" />
-              </svg>
-            </button>
-            <div class="al-op-pop">
-              <div class="al-op-label">
-                <span>Opasitas</span>
-                <span>{Math.round((floodData.opacity ?? 0.6) * 100)}%</span>
-              </div>
-              <input
-                type="range"
-                min="0.1"
-                max="1"
-                step="0.05"
-                value={floodData.opacity ?? 0.6}
-                oninput={(e) => onChangeFloodOpacity?.(parseFloat(e.currentTarget.value))}
-                aria-label="Opasitas lapisan"
-              />
-            </div>
-          </div>
-          <button type="button" class="al-x" onclick={onCloseFlood} title="Tutup Potensi Banjir" aria-label="Tutup Potensi Banjir">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
-          </button>
-        </header>
-        <div class="al-bar" style="background:{FLOOD_RAMP}" title="Hujan 24 jam ke depan"></div>
-        <div class="al-scale"><span>0 mm</span><span>24 jam</span><span>≥200 mm</span></div>
-      </section>
-    {/if}
-
-    {#if nwpData}
+    {:else if kind === 'nwp' && nwpData}
       {@const legend = nwpLegend()}
       <section class="al-row">
         <header class="al-head">
@@ -223,6 +248,7 @@
               {#if nwpData.validTime}<span class="al-dot">·</span> Valid {formatWibShort(nwpData.validTime)}{/if}
             </span>
           </div>
+          {@render orderButtons('nwp', nwpData.title)}
           <button type="button" class="al-x" onclick={onCloseNwp} title="Tutup {nwpData.title}" aria-label="Tutup {nwpData.title}">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
           </button>
@@ -237,6 +263,7 @@
         {/if}
       </section>
     {/if}
+    {/each}
   </div>
 {/if}
 
@@ -288,6 +315,10 @@
     margin: 0 0.3em;
     opacity: 0.55;
   }
+  .al-x.on {
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.16);
+  }
   .al-x {
     flex-shrink: 0;
     width: 22px;
@@ -308,6 +339,20 @@
   .al-x svg {
     width: 12px;
     height: 12px;
+  }
+  .al-order {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+  }
+  .al-order .al-x {
+    width: 16px;
+    height: 12px;
+    margin-top: 0;
+  }
+  .al-order .al-x:disabled {
+    opacity: 0.25;
+    cursor: default;
   }
   .al-op {
     position: relative;
@@ -357,6 +402,12 @@
   .al-bar i {
     flex: 1;
     display: block;
+  }
+  .al-sub-label {
+    margin-top: 8px;
+    font-size: 9px;
+    letter-spacing: 0.01em;
+    color: rgba(244, 244, 245, 0.55);
   }
   .al-scale {
     display: flex;

@@ -25,8 +25,11 @@
     onCloseSpartan,
     onCloseLandslide,
     onChangeLandslideOpacity,
+    onToggleInarisk,
     onCloseFlood,
     onChangeFloodOpacity,
+    hazardOrder = null,
+    onMoveHazard,
   } = $props();
 
   let showPanel = $state(false);
@@ -117,8 +120,11 @@
     {onCloseSpartan}
     {onCloseLandslide}
     {onChangeLandslideOpacity}
+    {onToggleInarisk}
     {onCloseFlood}
     {onChangeFloodOpacity}
+    {hazardOrder}
+    {onMoveHazard}
   />
   <div class="relative group shrink-0">
     <button
