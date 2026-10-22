@@ -17,10 +17,16 @@
     satelliteData = null,
     nwpData = null,
     spartanData = null,
+    landslideData = null,
+    floodData = null,
     onCloseRadar,
     onCloseSatellite,
     onCloseNwp,
     onCloseSpartan,
+    onCloseLandslide,
+    onChangeLandslideOpacity,
+    onCloseFlood,
+    onChangeFloodOpacity,
   } = $props();
 
   let showPanel = $state(false);
@@ -103,10 +109,16 @@
     {satelliteData}
     {nwpData}
     {spartanData}
+    {landslideData}
+    {floodData}
     {onCloseRadar}
     {onCloseSatellite}
     {onCloseNwp}
     {onCloseSpartan}
+    {onCloseLandslide}
+    {onChangeLandslideOpacity}
+    {onCloseFlood}
+    {onChangeFloodOpacity}
   />
   <div class="relative group shrink-0">
     <button

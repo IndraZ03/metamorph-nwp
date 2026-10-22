@@ -3,15 +3,30 @@
   import { formatWibShort } from '../services/numericTiles.js';
   import { SPARTAN_CLASSES, spartanDateLabel } from '../services/spartan.js';
 
+  const LANDSLIDE_LEVELS = [
+    { color: '#DC2626', label: 'Bahaya' },
+    { color: '#F97316', label: 'Siaga' },
+    { color: '#EAB308', label: 'Waspada' },
+  ];
+
+  // Sama dengan ramp di engine/flood/tiles.py: t*200 mm, rgb(30+150t, 180-130t, 230-30t).
+  const FLOOD_RAMP = 'linear-gradient(to right, rgb(30,180,230), rgb(180,50,200))';
+
   let {
     radarData = null,
     satelliteData = null,
     nwpData = null,
     spartanData = null,
+    landslideData = null,
+    floodData = null,
     onCloseRadar,
     onCloseSatellite,
     onCloseNwp,
     onCloseSpartan,
+    onCloseLandslide,
+    onChangeLandslideOpacity,
+    onCloseFlood,
+    onChangeFloodOpacity,
   } = $props();
 
   function nwpLegend() {
@@ -42,7 +57,7 @@
   ];
 </script>
 
-{#if radarData || satelliteData || nwpData || spartanData}
+{#if radarData || satelliteData || nwpData || spartanData || landslideData || floodData}
   <div class="al" role="region" aria-label="Lapisan aktif">
     {#if radarData}
       <section class="al-row">
@@ -96,6 +111,104 @@
           {/each}
         </div>
         <div class="al-scale">{#each SPARTAN_CLASSES as cls}<span>{cls.label}</span>{/each}</div>
+      </section>
+    {/if}
+
+    {#if landslideData}
+      <section class="al-row">
+        <header class="al-head">
+          <div class="al-meta">
+            <span class="al-name">Prakiraan Potensi Tanah Longsor</span>
+            <span class="al-sub">
+              {#if landslideData.runTime}Run {formatWibShort(landslideData.runTime)}{/if}
+              {#if landslideData.validTime}<span class="al-dot">·</span> Valid {formatWibShort(landslideData.validTime)}{/if}
+            </span>
+          </div>
+          <div class="al-op">
+            <button
+              type="button"
+              class="al-x"
+              aria-label="Opasitas lapisan {Math.round((landslideData.opacity ?? 0.6) * 100)} persen"
+              title="Opasitas"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor" stroke="none" />
+              </svg>
+            </button>
+            <div class="al-op-pop">
+              <div class="al-op-label">
+                <span>Opasitas</span>
+                <span>{Math.round((landslideData.opacity ?? 0.6) * 100)}%</span>
+              </div>
+              <input
+                type="range"
+                min="0.1"
+                max="1"
+                step="0.05"
+                value={landslideData.opacity ?? 0.6}
+                oninput={(e) => onChangeLandslideOpacity?.(parseFloat(e.currentTarget.value))}
+                aria-label="Opasitas lapisan"
+              />
+            </div>
+          </div>
+          <button type="button" class="al-x" onclick={onCloseLandslide} title="Tutup Prakiraan Potensi Tanah Longsor" aria-label="Tutup Prakiraan Potensi Tanah Longsor">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
+          </button>
+        </header>
+        <div class="al-bar" title="Potensi tanah longsor">
+          {#each LANDSLIDE_LEVELS as lvl}
+            <i style="background:{lvl.color}" title={lvl.label}></i>
+          {/each}
+        </div>
+        <div class="al-scale">{#each LANDSLIDE_LEVELS as lvl}<span>{lvl.label}</span>{/each}</div>
+      </section>
+    {/if}
+
+    {#if floodData}
+      <section class="al-row">
+        <header class="al-head">
+          <div class="al-meta">
+            <span class="al-name">Potensi Banjir</span>
+            <span class="al-sub">
+              {#if floodData.runTime}Run {formatWibShort(floodData.runTime)}{/if}
+              {#if floodData.validTime}<span class="al-dot">·</span> Valid {formatWibShort(floodData.validTime)}{/if}
+            </span>
+          </div>
+          <div class="al-op">
+            <button
+              type="button"
+              class="al-x"
+              aria-label="Opasitas lapisan {Math.round((floodData.opacity ?? 0.6) * 100)} persen"
+              title="Opasitas"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor" stroke="none" />
+              </svg>
+            </button>
+            <div class="al-op-pop">
+              <div class="al-op-label">
+                <span>Opasitas</span>
+                <span>{Math.round((floodData.opacity ?? 0.6) * 100)}%</span>
+              </div>
+              <input
+                type="range"
+                min="0.1"
+                max="1"
+                step="0.05"
+                value={floodData.opacity ?? 0.6}
+                oninput={(e) => onChangeFloodOpacity?.(parseFloat(e.currentTarget.value))}
+                aria-label="Opasitas lapisan"
+              />
+            </div>
+          </div>
+          <button type="button" class="al-x" onclick={onCloseFlood} title="Tutup Potensi Banjir" aria-label="Tutup Potensi Banjir">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12" /></svg>
+          </button>
+        </header>
+        <div class="al-bar" style="background:{FLOOD_RAMP}" title="Hujan 24 jam ke depan"></div>
+        <div class="al-scale"><span>0 mm</span><span>24 jam</span><span>≥200 mm</span></div>
       </section>
     {/if}
 
@@ -195,6 +308,44 @@
   .al-x svg {
     width: 12px;
     height: 12px;
+  }
+  .al-op {
+    position: relative;
+    flex-shrink: 0;
+  }
+  .al-op-pop {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    width: 168px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: rgba(14, 16, 20, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    backdrop-filter: blur(18px);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s;
+    z-index: 2;
+  }
+  .al-op:hover .al-op-pop,
+  .al-op:focus-within .al-op-pop {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .al-op-label {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 4px;
+    font-size: 10px;
+    color: rgba(244, 244, 245, 0.7);
+    font-variant-numeric: tabular-nums;
+  }
+  .al-op-pop input {
+    width: 100%;
+    accent-color: #2563eb;
+    cursor: pointer;
   }
   .al-bar {
     display: flex;

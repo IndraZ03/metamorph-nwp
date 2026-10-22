@@ -34,10 +34,7 @@
   import { inspectPop } from './services/inspectPop.svelte.js';
   import { bboxOf, colorFor, countByGeometry, layerDefs } from './services/userLayers.js';
   import { WindOverlay } from './services/windAnimation.js';
-  import ForecastControl from './components/ForecastControl.svelte';
   import { timelineTime, reconcileTimeline } from './services/forecastTimeline.js';
-  import LandslideLegend from './components/LandslideLegend.svelte';
-  import FloodLegend from './components/FloodLegend.svelte';
   import { fetchFloodMetadata, floodTileUrl, fetchFloodPoint, pointContent as floodPointContent } from './services/flood.js';
   import { fetchLandslideMetadata, landslideTileUrl, fetchLandslidePoint, pointContent } from './services/landslide.js';
   import { DrawingController } from './services/drawing/controller.js';
@@ -325,7 +322,6 @@
   let nwpData = $state(null);
   let nwpKey = $state(null);
   let nwpPollId = null;
-  let nwpAttribControl = null;
   let nwpInspect = null;
   let nwpPopup = null;
   let nwpPopupApp = null;
@@ -369,7 +365,6 @@
   let forecastStep = $state(null);
   let forecastRunTime = $state('');
   let landslideMeta = $state(null);
-  let landslideError = $state('');
   let landslideOpacity = $state(0.6);
   let landslideVisible = $state(true);
   let landslideRequest = null;
@@ -379,12 +374,7 @@
   let nwpRequestSeq = 0;
 
   let floodMeta = $state(null);
-  let floodError = $state('');
-  let floodNotice = $state('');
   let floodOpacity = $state(0.6);
-  let floodVisible = $state(true);
-  let floodIndicator = $state('rainfall');
-  let floodMode = $state('screening');
   let floodRequest, floodPointRequest, floodPopup, floodPoll;
   let floodGeneration = 0;
   let timelineAnchor = null;
@@ -404,7 +394,17 @@
     if (map?.getSource('flood-source')) map.removeSource('flood-source');
   }
 
+  let hazardPlaying = $state(false);
+  let hazardLoop = $state(false);
+  let hazardTimer;
+
+  function stopHazardPlay() {
+    clearTimeout(hazardTimer);
+    hazardPlaying = false;
+  }
+
   function stopFlood() {
+    stopHazardPlay();
     floodRequest?.abort();
     clearInterval(floodPoll);
     floodPoll = null;
@@ -413,13 +413,15 @@
 
   function renderFlood() {
     clearFlood();
-    if (!map?.isStyleLoaded() || activeModel !== 'flood' || !floodMeta || !floodVisible) return;
+    if (!map?.isStyleLoaded() || activeModel !== 'flood' || !floodMeta) return;
     const row = floodMeta.steps.find((r) => r.step === forecastStep);
-    if (!row?.ready) { floodError = 'Jendela P24 belum lengkap atau tidak tersedia'; return; }
-    floodError = '';
-    map.addSource('flood-source', { type: 'raster', tiles: [floodTileUrl(floodMeta, forecastStep, floodIndicator)],
+    if (!row?.ready) return;
+    map.addSource('flood-source', { type: 'raster', tiles: [floodTileUrl(floodMeta, forecastStep, 'rainfall')],
       tileSize: 256, bounds: floodMeta.bbox, minzoom: floodMeta.minzoom, maxzoom: floodMeta.maxzoom,
       attribution: 'ECMWF IFS × InaRISK BNPB · Eksperimental, bukan peringatan resmi' });
+    // overlayBeforeLayer, bukan landBeforeLayer: landBeforeLayer menyisipkan raster
+    // di bawah layer 'water' Carto, jadi seluruh peta menutupnya. Banjir tidak punya
+    // sea-mask seperti longsor, jadi harus di atas air.
     map.addLayer({ id: 'flood-layer', type: 'raster', source: 'flood-source',
       paint: { 'raster-opacity': floodOpacity, 'raster-resampling': 'nearest', 'raster-fade-duration': 0 } }, overlayBeforeLayer());
   }
@@ -428,7 +430,6 @@
     floodRequest?.abort();
     const request = new AbortController();
     floodRequest = request;
-    floodError = 'Memuat indikator banjir…';
     try {
       const metadata = await fetchFloodMetadata(request.signal);
       if (request.signal.aborted || floodRequest !== request || activeModel !== 'flood') return;
@@ -438,7 +439,6 @@
       forecastRunTime = metadata.run_time;
       const selection = reconcileTimeline(forecastRows, forecastRunTime, anchor);
       forecastStep = selection.step;
-      floodNotice = selection.notice;
       timelineNotice = selection.notice;
       timelineAnchor = null;
       renderFlood();
@@ -447,12 +447,11 @@
       clearFlood();
       floodMeta = null;
       forecastRows = [];
-      floodError = error.message;
     }
   }
 
   async function handleFloodClick(event) {
-    if (!floodMeta || !floodVisible || !map?.getLayer('flood-layer')) return;
+    if (!floodMeta || !map?.getLayer('flood-layer')) return;
     floodPointRequest?.abort();
     floodPopup?.remove();
     const request = new AbortController();
@@ -461,10 +460,10 @@
     const metadata = floodMeta, step = forecastStep;
     try {
       const data = await fetchFloodPoint(metadata, step, event.lngLat.lat, event.lngLat.lng, request.signal);
-      if (request.signal.aborted || generation !== floodGeneration || !floodVisible || activeModel !== 'flood' || metadata !== floodMeta || step !== forecastStep) return;
+      if (request.signal.aborted || generation !== floodGeneration || activeModel !== 'flood' || metadata !== floodMeta || step !== forecastStep) return;
       floodPopup = new maplibregl.Popup({ maxWidth: '340px' }).setLngLat(event.lngLat).setDOMContent(floodPointContent(data)).addTo(map);
-    } catch (error) {
-      if (!request.signal.aborted && generation === floodGeneration) floodError = error.message;
+    } catch {
+      // Klik gagal: tidak ada banner status.
     }
   }
 
@@ -472,11 +471,13 @@
     landslidePointRequest?.abort();
     landslidePopup?.remove();
     landslidePopup = null;
+    if (map?.getLayer('landslide-sea-mask')) map.removeLayer('landslide-sea-mask');
     if (map?.getLayer('landslide-layer')) map.removeLayer('landslide-layer');
     if (map?.getSource('landslide-source')) map.removeSource('landslide-source');
   }
 
   function stopLandslide() {
+    stopHazardPlay();
     landslideRequest?.abort();
     clearInterval(landslidePoll);
     landslidePoll = null;
@@ -487,11 +488,7 @@
     clearLandslide();
     if (!map?.isStyleLoaded() || activeModel !== 'landslide' || !landslideMeta) return;
     const row = landslideMeta.steps.find((s) => s.step === forecastStep);
-    if (!row?.ready) {
-      landslideError = `Jendela +${forecastStep} sampai +${forecastStep + 24} jam tidak tersedia`;
-      return;
-    }
-    landslideError = '';
+    if (!row?.ready) return;
     map.addSource('landslide-source', {
       type: 'raster', tiles: [landslideTileUrl(landslideMeta, row.step)], tileSize: 256,
       bounds: landslideMeta.bbox, minzoom: landslideMeta.minzoom, maxzoom: landslideMeta.maxzoom,
@@ -500,7 +497,24 @@
     map.addLayer({ id: 'landslide-layer', type: 'raster', source: 'landslide-source',
       layout: { visibility: landslideVisible ? 'visible' : 'none' },
       paint: { 'raster-opacity': landslideOpacity, 'raster-resampling': 'nearest', 'raster-fade-duration': 0 },
-    }, overlayBeforeLayer());
+    }, landBeforeLayer());
+    // Tile longsor grid kotak ~25 km yang nyembul ke laut. Tutup dengan polygon
+    // air basemap (source protomaps, sama seperti mask daratan model cuaca global)
+    // yang diwarnai persis warna background peta, jadi tepinya ikut garis pantai.
+    if (map.getSource('protomaps') && !map.getLayer('landslide-sea-mask')) {
+      const bg = map.getPaintProperty('background', 'background-color');
+      map.addLayer({
+        id: 'landslide-sea-mask',
+        type: 'fill',
+        source: 'protomaps',
+        'source-layer': 'water',
+        filter: ['==', '$type', 'Polygon'],
+        paint: {
+          'fill-color': typeof bg === 'string' && bg ? bg : '#0b1220',
+          'fill-opacity': 1,
+        },
+      }, landBeforeLayer());
+    }
   }
 
   async function applyLandslide() {
@@ -508,7 +522,6 @@
     const request = new AbortController();
     landslideRequest = request;
     clearLandslide();
-    landslideError = 'Memuat data BNPB/ECMWF…';
     try {
       const metadata = await fetchLandslideMetadata(request.signal);
       if (request.signal.aborted || activeModel !== 'landslide') return;
@@ -525,7 +538,6 @@
       if (request.signal.aborted) return;
       landslideMeta = null;
       forecastRows = [];
-      landslideError = error.message;
     }
   }
 
@@ -541,9 +553,60 @@
       const data = await fetchLandslidePoint(metadata, step, event.lngLat.lat, event.lngLat.lng, request.signal);
       if (request.signal.aborted || activeModel !== 'landslide' || metadata !== landslideMeta || step !== forecastStep) return;
       landslidePopup = new maplibregl.Popup({ maxWidth: '320px' }).setLngLat(event.lngLat).setDOMContent(pointContent(data)).addTo(map);
-    } catch (error) {
-      if (!request.signal.aborted) landslideError = error.message;
+    } catch {
+      // Klik gagal: tidak ada banner status.
     }
+  }
+
+  const hazardMode = $derived(activeModel === 'landslide' || activeModel === 'flood');
+  const timelineSteps = $derived(hazardMode
+    ? forecastRows.map((row) => ({ ...row, token: String(row.step), t: Date.parse(row.validTime) || 0 }))
+    : nwpSteps);
+  const timelineToken = $derived(hazardMode ? (forecastStep == null ? null : String(forecastStep)) : nwpStepToken);
+  const timelinePlaying = $derived(hazardMode ? hazardPlaying : nwpPlaying);
+  const timelineLoop = $derived(hazardMode ? hazardLoop : nwpLoop);
+  const timelineRun = $derived(hazardMode ? (forecastRunTime || null) : (nwpData?.runTime || (nwpManifest ? modelRunTime(activeModel, nwpManifest) : null)));
+  const timelineTitle = $derived(hazardMode ? (activeModel === 'landslide' ? 'Potensi Tanah Longsor' : 'Potensi Banjir') : (nwpData?.title || MODELS[activeModel]?.title || ''));
+
+  function seekTimeline(step) {
+    if (hazardMode) { stopHazardPlay(); changeForecastStep(Number(step.step)); }
+    else seekNwpStep(step);
+  }
+  function stepTimeline(delta) {
+    if (!hazardMode) return stepBy(delta);
+    stopHazardPlay();
+    const index = forecastRows.findIndex((row) => Number(row.step) === forecastStep);
+    let next = index + delta;
+    if (next < 0 || next >= forecastRows.length) {
+      if (!hazardLoop) return;
+      next = (next + forecastRows.length) % forecastRows.length;
+    }
+    changeForecastStep(Number(forecastRows[next].step));
+  }
+  function startTimelinePlay() {
+    if (!hazardMode) return startNwpPlay();
+    if (hazardPlaying || !forecastRows.length) return;
+    hazardPlaying = true;
+    const tick = () => {
+      if (!hazardPlaying) return;
+      const index = forecastRows.findIndex((row) => Number(row.step) === forecastStep);
+      let next = index + 1;
+      if (next >= forecastRows.length) {
+        if (!hazardLoop) { stopHazardPlay(); return; }
+        next = 0;
+      }
+      changeForecastStep(Number(forecastRows[next].step));
+      hazardTimer = setTimeout(tick, NWP_PLAY_MS);
+    };
+    hazardTimer = setTimeout(tick, NWP_PLAY_MS);
+  }
+  function stopTimelinePlay() {
+    if (hazardMode) stopHazardPlay();
+    else stopNwpPlay();
+  }
+  function setTimelineLoop(on) {
+    if (hazardMode) hazardLoop = on;
+    else nwpLoop = on;
   }
 
   function changeForecastStep(step) {
@@ -557,15 +620,14 @@
     }
   }
 
+  function changeFloodOpacity(value) {
+    floodOpacity = value;
+    if (map?.getLayer('flood-layer')) map.setPaintProperty('flood-layer', 'raster-opacity', value);
+  }
+
   function changeLandslideOpacity(value) {
     landslideOpacity = value;
     if (map?.getLayer('landslide-layer')) map.setPaintProperty('landslide-layer', 'raster-opacity', value);
-  }
-
-  function toggleLandslideVisibility() {
-    landslideVisible = !landslideVisible;
-    landslidePopup?.remove();
-    if (map?.getLayer('landslide-layer')) map.setLayoutProperty('landslide-layer', 'visibility', landslideVisible ? 'visible' : 'none');
   }
 
   // User overlays (GeoJSON / GPX)
@@ -735,6 +797,15 @@
       m.remove();
     };
   });
+
+  // Longsor & banjir harus di BAWAH fill air basemap. Layer `water` Carto
+  // (source-layer water, kind=ocean) menutupi seluruh laut, jadi tile yang
+  // luber melewati garis pantai tertutup dan hanya tersisa di pulau.
+  function landBeforeLayer() {
+    if (map.getLayer('water')) return 'water';
+    if (map.getLayer('water_shadow')) return 'water_shadow';
+    return undefined;
+  }
 
   function overlayBeforeLayer() {
     if (map.getLayer('coastline_outline')) return 'coastline_outline';
@@ -1048,14 +1119,6 @@
     dropNwpSlot(1);
     if (map.getLayer('ecmwf-layer')) map.removeLayer('ecmwf-layer');
     if (map.getSource('ecmwf-source')) map.removeSource('ecmwf-source');
-    if (nwpAttribControl) {
-      try {
-        map.removeControl(nwpAttribControl);
-      } catch {
-        /* already gone */
-      }
-      nwpAttribControl = null;
-    }
     nwpKey = null;
     nwpData = null;
   }
@@ -1231,10 +1294,6 @@
     nwpSlot = to;
     nwpPendingGen = 0;
     nwpPendingToken = null;
-    if (!nwpAttribControl) {
-      nwpAttribControl = new maplibregl.AttributionControl({ compact: true });
-      map.addControl(nwpAttribControl, 'bottom-right');
-    }
     commitNwpStep(modelId, manifest, step);
     requestAnimationFrame(() => {
       if (gen !== nwpSeekGen) return;
@@ -1847,7 +1906,7 @@
 
 <main
     class="relative w-screen h-screen overflow-hidden bg-slate-100"
-    class:nwp-timeline-on={!!satelliteData || spartanActive || (GLOBAL_MODELS.includes(activeModel) && nwpSteps.length > 0)}
+    class:nwp-timeline-on={!!satelliteData || spartanActive || ((GLOBAL_MODELS.includes(activeModel) || activeModel === 'landslide' || activeModel === 'flood') && forecastRows.length > 0)}
   >
   <!-- MapLibre Container -->
   <div bind:this={mapContainer} class="absolute inset-0 w-full h-full z-0"></div>
@@ -1908,10 +1967,24 @@
     {radarData}
     {satelliteData}
     {nwpData}
+    landslideData={activeModel === 'landslide' && landslideMeta ? {
+      runTime: landslideMeta.run_time,
+      validTime: forecastRows.find((r) => Number(r.step) === forecastStep)?.validTime,
+      opacity: landslideOpacity,
+    } : null}
     onCloseRadar={() => applyRadar(null)}
     onCloseSatellite={() => applySatellite(null)}
     onCloseNwp={closeNwp}
     onCloseSpartan={() => { if (spartanActive) toggleSpartan(); }}
+    onCloseLandslide={() => handleSelectModel('landslide')}
+    onChangeLandslideOpacity={changeLandslideOpacity}
+    floodData={activeModel === 'flood' && floodMeta ? {
+      runTime: floodMeta.run_time,
+      validTime: forecastRows.find((r) => Number(r.step) === forecastStep)?.validTime,
+      opacity: floodOpacity,
+    } : null}
+    onCloseFlood={() => handleSelectModel('flood')}
+    onChangeFloodOpacity={changeFloodOpacity}
   />
 
   {#if GLOBAL_MODELS.includes(activeModel)}
@@ -1961,21 +2034,21 @@
       onPlay={startSpartanPlay} onPause={stopSpartanPlay}
       onPrev={() => { stopSpartanPlay(); stepSpartan(-1); }} onNext={() => { stopSpartanPlay(); stepSpartan(1); }}
       onLoop={(on) => (spartanLoop = on)} />
-  {:else if GLOBAL_MODELS.includes(activeModel)}
+  {:else if GLOBAL_MODELS.includes(activeModel) || ((activeModel === 'landslide' || activeModel === 'flood') && forecastRows.length > 0)}
     <ForecastTimeline
-      steps={nwpSteps}
-      selectedToken={nwpStepToken}
-      playing={nwpPlaying}
-      loop={nwpLoop}
-      disabled={!nwpSteps.length}
-      modelTitle={nwpData?.title || MODELS[activeModel]?.title || ''}
-      runTime={nwpData?.runTime || (nwpManifest ? modelRunTime(activeModel, nwpManifest) : null)}
-      onSeek={seekNwpStep}
-      onPlay={startNwpPlay}
-      onPause={stopNwpPlay}
-      onPrev={() => stepBy(-1)}
-      onNext={() => stepBy(1)}
-      onLoop={(on) => (nwpLoop = on)}
+      steps={timelineSteps}
+      selectedToken={timelineToken}
+      playing={timelinePlaying}
+      loop={timelineLoop}
+      disabled={!timelineSteps.length}
+      modelTitle={timelineTitle}
+      runTime={timelineRun}
+      onSeek={seekTimeline}
+      onPlay={startTimelinePlay}
+      onPause={stopTimelinePlay}
+      onPrev={() => stepTimeline(-1)}
+      onNext={() => stepTimeline(1)}
+      onLoop={(on) => setTimelineLoop(on)}
     />
   {/if}
 
@@ -2004,45 +2077,6 @@
       currentOpacity={satelliteData?.opacity ?? 0.9}
       onSelect={applySatellite}
       onClose={() => (showSatelliteModal = false)}
-    />
-  {/if}
-
-  {#if activeModel === 'landslide' && landslideError}
-    <div class="fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-red-950/90 text-red-200 text-xs rounded-xl border border-red-700/60 shadow-xl backdrop-blur-md flex items-center gap-2">
-      <span class="w-2 h-2 rounded-full bg-red-500"></span>
-      <span>{landslideError}</span>
-    </div>
-  {/if}
-
-  {#if activeModel === 'landslide' && landslideMeta}
-    <LandslideLegend
-      metadata={landslideMeta}
-      step={forecastStep}
-      opacity={landslideOpacity}
-      visible={landslideVisible}
-      onChangeOpacity={changeLandslideOpacity}
-      onToggleVisibility={toggleLandslideVisibility}
-      onClose={() => handleSelectModel('landslide')}
-    />
-  {/if}
-
-  {#if activeModel === 'flood'}
-    <FloodLegend metadata={floodMeta} step={forecastStep} error={floodError} notice={floodNotice}
-      opacity={floodOpacity} visible={floodVisible} indicator={floodIndicator} mode={floodMode}
-      onIndicator={(value) => { floodIndicator = value; renderFlood(); }}
-      onMode={(value) => { floodMode = value; clearFlood(); renderFlood(); }}
-      onOpacity={(value) => { floodOpacity = value; if (map?.getLayer('flood-layer')) map.setPaintProperty('flood-layer', 'raster-opacity', value); }}
-      onVisibility={() => { floodVisible = !floodVisible; floodRequest?.abort(); renderFlood(); if (floodVisible) applyFlood(); }}
-      onClose={() => handleSelectModel('flood')}/>
-  {/if}
-
-  {#if (activeModel === 'landslide' || activeModel === 'flood') && forecastRows.length > 0}
-    <ForecastControl
-      rows={forecastRows}
-      selected={forecastStep}
-      runTime={forecastRunTime}
-      notice={timelineNotice}
-      onchange={changeForecastStep}
     />
   {/if}
 
